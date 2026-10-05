@@ -3,6 +3,7 @@
 /dts-v1/;
 #include <dt-bindings/regulator/qcom,rpmh-regulator.h>
 #include <dt-bindings/pinctrl/qcom,pmic-gpio.h>
+#include <dt-bindings/interrupt-controller/irq.h>
 #include "sm8450.dtsi"
 #include "pm8350.dtsi"
 #include "pm8350c.dtsi"
@@ -217,5 +218,25 @@
 		drive-strength = <2>;
 		bias-pull-up;
 		input-enable;
+	};
+};
+
+&qup_spi4_data_clk {
+	drive-strength = <6>;
+	bias-disable;
+};
+
+&spi4 {
+	status = "okay";
+
+	touchscreen@0 {
+		compatible = "novatek,nt36523n";
+		reg = <0>;
+		spi-max-frequency = <1000000>;
+		interrupts-extended = <&tlmm 21 IRQ_TYPE_EDGE_RISING>;
+		irq-gpios = <&tlmm 21 GPIO_ACTIVE_HIGH>;
+		firmware-name = "novatek/tb320fc-nt36523n.bin";
+		touchscreen-size-x = <16001>;
+		touchscreen-size-y = <25601>;
 	};
 };
