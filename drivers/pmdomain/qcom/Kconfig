@@ -20,6 +20,7 @@ config QCOM_CPR
 config QCOM_RPMHPD
 	tristate "Qualcomm RPMh Power domain driver"
 	depends on QCOM_RPMH && QCOM_COMMAND_DB
+	select PM_OPP
 	help
 	  QCOM RPMh Power domain driver to support power-domains with
 	  performance states. The driver communicates a performance state
