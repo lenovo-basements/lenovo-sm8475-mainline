@@ -16,8 +16,10 @@
 	compatible = "lenovo,tb320fc", "qcom,sm8475", "qcom,sm8450",
 		     "qcom,cape-mtp", "qcom,cape", "qcom,mtp";
 	chassis-type = "tablet";
+	/* TODO: Remove downstream *-id */
 	qcom,msm-id = <0x213 0x10000>;
 	qcom,board-id = <0x10008 0>;
+	/* TODO: merge this flag during vendor_boot building */
 	/* region_country is mandatory as bootloader accept either ROW or PRC */
 	region_country = "ROW";
 
@@ -34,6 +36,7 @@
 	aliases {
 		serial0 = &uart7;
 		i2c5 = &i2c5;
+		mmc0 = &sdhc_2;
 	};
 	chosen {
 		stdout-path = "serial0:115200n8";
@@ -109,6 +112,7 @@
 		compatible = "qcom,pm8350c-rpmh-regulators";
 		qcom,pmic-id = "c";
 		vdd-bob-supply = <&vph_pwr>;
+		vdd-l6-l9-l11-supply = <&vreg_bob>;
 		vdd-l10-supply = <&vreg_s12b_1p25>;
 		vreg_bob: bob {
 			regulator-name = "vreg_bob";
@@ -120,6 +124,18 @@
 			regulator-name = "vreg_l10c_1p2";
 			regulator-min-microvolt = <1200000>;
 			regulator-max-microvolt = <1200000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+		vreg_l6c_2p96: ldo6 {
+			regulator-name = "vreg_l6c_2p96";
+			regulator-min-microvolt = <2960000>;
+			regulator-max-microvolt = <2960000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+		vreg_l9c_2p96: ldo9 {
+			regulator-name = "vreg_l9c_2p96";
+			regulator-min-microvolt = <2960000>;
+			regulator-max-microvolt = <2960000>;
 			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
 		};
 	};
@@ -169,4 +185,37 @@
 	phys = <&usb_1_hsphy>;
 	phy-names = "usb2-phy";
 	/delete-property/ usb-role-switch;
+};
+
+&sdhc_2 {
+	cd-gpios = <&tlmm 92 GPIO_ACTIVE_HIGH>;
+	pinctrl-names = "default", "sleep";
+	pinctrl-0 = <&sdc2_default_state &sdc2_card_detect>;
+	pinctrl-1 = <&sdc2_sleep_state &sdc2_card_detect>;
+	vmmc-supply = <&vreg_l9c_2p96>;
+	vqmmc-supply = <&vreg_l6c_2p96>;
+	max-frequency = <50000000>;
+	no-1-8-v;
+	no-sdio;
+	no-mmc;
+	status = "okay";
+};
+
+&sdc2_default_state {
+	cmd-pins {
+		drive-strength = <10>;
+	};
+	data-pins {
+		drive-strength = <10>;
+	};
+};
+
+&tlmm {
+	sdc2_card_detect: sd-card-detect-state {
+		pins = "gpio92";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-pull-up;
+		input-enable;
+	};
 };
