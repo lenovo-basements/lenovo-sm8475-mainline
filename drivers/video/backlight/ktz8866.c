@@ -129,6 +129,7 @@ static int ktz8866_probe(struct i2c_client *client)
 	struct backlight_device *backlight_dev;
 	struct backlight_properties props;
 	struct ktz8866 *ktz;
+	u32 brightness = DEFAULT_BRIGHTNESS;
 	int ret = 0;
 
 	ktz = devm_kzalloc(&client->dev, sizeof(*ktz), GFP_KERNEL);
@@ -154,7 +155,10 @@ static int ktz8866_probe(struct i2c_client *client)
 	memset(&props, 0, sizeof(props));
 	props.type = BACKLIGHT_RAW;
 	props.max_brightness = MAX_BRIGHTNESS;
-	props.brightness = DEFAULT_BRIGHTNESS;
+	of_property_read_u32(client->dev.of_node, "default-brightness", &brightness);
+	if (brightness > MAX_BRIGHTNESS)
+		return dev_err_probe(&client->dev, -EINVAL, "default brightness exceeds maximum\n");
+	props.brightness = brightness;
 	props.scale = BACKLIGHT_SCALE_LINEAR;
 
 	backlight_dev = devm_backlight_device_register(&client->dev, "ktz8866-backlight",
