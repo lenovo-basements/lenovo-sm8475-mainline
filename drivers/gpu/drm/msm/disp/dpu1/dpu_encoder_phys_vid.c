@@ -134,10 +134,10 @@ static void drm_mode_to_intf_timing_params(
 		 * TODO: replace drm_dsc_get_bpp_int with logic to handle
 		 * fractional part if there is fraction
 		 */
-		timing->width = timing->width * drm_dsc_get_bpp_int(dsc) /
-				(dsc->bits_per_component * 3);
+		timing->dce_bytes_per_line = msm_dsc_get_bytes_per_intf(dsc, mode->hdisplay);
+		timing->width = DIV_ROUND_UP(timing->dce_bytes_per_line * 8,
+					   dsc->bits_per_component * 3);
 		timing->xres = timing->width;
-		timing->dce_bytes_per_line = msm_dsc_get_bytes_per_line(dsc);
 	}
 }
 

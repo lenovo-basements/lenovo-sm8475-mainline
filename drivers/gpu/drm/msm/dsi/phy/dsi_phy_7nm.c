@@ -6,6 +6,7 @@
 #include <dt-bindings/clock/qcom,dsi-phy-28nm.h>
 #include <linux/bitfield.h>
 #include <linux/clk.h>
+#include <linux/of.h>
 #include <linux/clk-provider.h>
 #include <linux/iopoll.h>
 
@@ -53,6 +54,8 @@
 #define DSI_PHY_7NM_QUIRK_V5_2		BIT(4)
 /* Hardware is V7.2 */
 #define DSI_PHY_7NM_QUIRK_V7_2		BIT(5)
+/* added lenovo V4.3.2 while retains V4.3 PLL behavior with new PHY LDO controls. */
+#define DSI_PHY_7NM_QUIRK_V4_3_2		BIT(6)
 
 struct dsi_pll_config {
 	bool enable_ssc;
@@ -1090,6 +1093,12 @@ static int dsi_7nm_phy_enable(struct msm_dsi_phy *phy,
 		glbl_rescode_bot_ctrl = 0x3c;
 	}
 
+	/* use the downstream 4.3.2 LDO setup from stock while retaining V4.3 termination, lane and PLL settings. */
+	if (phy->cfg->quirks & DSI_PHY_7NM_QUIRK_V4_3_2) {
+		vreg_ctrl_0 = phy->cphy_mode ? 0x45 : 0x44;
+		vreg_ctrl_1 = phy->cphy_mode ? 0x41 : 0x19;
+	}
+
 	spin_lock_irqsave(&pll->pll_enable_lock, flags);
 	pll->pll_enable_cnt = 1;
 	/* de-assert digital and pll power down */
@@ -1186,6 +1195,27 @@ static int dsi_7nm_phy_enable(struct msm_dsi_phy *phy,
 
 	/* DSI lane settings */
 	dsi_phy_hw_v4_0_lane_settings(phy);
+
+	if (of_machine_is_compatible("lenovo,tb320fc")) {
+		dev_info(&phy->pdev->dev,
+			 "TB320FC PHY%d setup revision=%02x/%02x/%02x/%02x usecase=%u cphy=%u lane=%#x clock=%#x vreg=%#x/%#x\n",
+			 phy->id, readl(base + REG_DSI_7nm_PHY_CMN_REVISION_ID0),
+			 readl(base + REG_DSI_7nm_PHY_CMN_REVISION_ID1),
+			 readl(base + REG_DSI_7nm_PHY_CMN_REVISION_ID2),
+			 readl(base + REG_DSI_7nm_PHY_CMN_REVISION_ID3),
+			 phy->usecase, phy->cphy_mode,
+			 readl(base + REG_DSI_7nm_PHY_CMN_LANE_CTRL0),
+			 readl(base + REG_DSI_7nm_PHY_CMN_CLK_CFG1),
+			 readl(base + REG_DSI_7nm_PHY_CMN_VREG_CTRL_0),
+			 readl(base + REG_DSI_7nm_PHY_CMN_VREG_CTRL_1));
+		dev_info(&phy->pdev->dev,
+			 "TB320FC PHY%d C-PHY timings 4..8=%#x/%#x/%#x/%#x/%#x\n",
+			 phy->id, readl(base + REG_DSI_7nm_PHY_CMN_TIMING_CTRL_4),
+			 readl(base + REG_DSI_7nm_PHY_CMN_TIMING_CTRL_5),
+			 readl(base + REG_DSI_7nm_PHY_CMN_TIMING_CTRL_6),
+			 readl(base + REG_DSI_7nm_PHY_CMN_TIMING_CTRL_7),
+			 readl(base + REG_DSI_7nm_PHY_CMN_TIMING_CTRL_8));
+	}
 
 	DBG("DSI%d PHY enabled", phy->id);
 
@@ -1402,6 +1432,29 @@ const struct msm_dsi_phy_cfg dsi_phy_5nm_8450_cfgs = {
 	.io_start = { 0xae94400, 0xae96400 },
 	.num_dsi_phy = 2,
 	.quirks = DSI_PHY_7NM_QUIRK_V4_3,
+};
+
+const struct msm_dsi_phy_cfg dsi_phy_4nm_8475_cfgs = {
+	.has_phy_lane = true,
+	.regulator_data = dsi_phy_7nm_97800uA_regulators,
+	.num_regulators = ARRAY_SIZE(dsi_phy_7nm_97800uA_regulators),
+	.ops = {
+		.enable = dsi_7nm_phy_enable,
+		.disable = dsi_7nm_phy_disable,
+		.pll_init = dsi_pll_7nm_init,
+		.save_pll_state = dsi_7nm_pll_save_state,
+		.restore_pll_state = dsi_7nm_pll_restore_state,
+		.set_continuous_clock = dsi_7nm_set_continuous_clock,
+	},
+	.min_pll_rate = 600000000UL,
+#ifdef CONFIG_64BIT
+	.max_pll_rate = 5000000000UL,
+#else
+	.max_pll_rate = ULONG_MAX,
+#endif
+	.io_start = { 0xae94400, 0xae96400 },
+	.num_dsi_phy = 2,
+	.quirks = DSI_PHY_7NM_QUIRK_V4_3 | DSI_PHY_7NM_QUIRK_V4_3_2,
 };
 
 const struct msm_dsi_phy_cfg dsi_phy_5nm_8775p_cfgs = {
