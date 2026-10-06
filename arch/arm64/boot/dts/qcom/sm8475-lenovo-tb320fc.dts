@@ -367,3 +367,108 @@
 		touchscreen-size-y = <25601>;
 	};
 };
+
+&gpucc { compatible = "qcom,sm8475-gpucc"; };
+&gpu {
+	compatible = "qcom,adreno-730.2", "qcom,adreno";
+	interconnects = <&gem_noc MASTER_GFX3D 0 &mc_virt SLAVE_EBI1 0>;
+	interconnect-names = "gfx-mem";
+	status = "okay";
+};
+&gmu { status = "okay"; };
+&gpu_zap_shader { firmware-name = "qcom/lenovo/tb320fc/a730_zap.mdt"; };
+&gpu_opp_table {
+	compatible = "operating-points-v2-adreno", "operating-points-v2";
+	/delete-node/ opp-818000000;
+	/delete-node/ opp-791000000;
+	/delete-node/ opp-734000000;
+	/delete-node/ opp-640000000;
+	/delete-node/ opp-599000000;
+	/delete-node/ opp-545000000;
+	/delete-node/ opp-492000000;
+	/delete-node/ opp-421000000;
+	/delete-node/ opp-350000000;
+	/delete-node/ opp-317000000;
+	/delete-node/ opp-285000000;
+	/delete-node/ opp-220000000;
+	/delete-node/ opp-324000000;
+
+	opp-220000000 {
+		opp-hz = /bits/ 64 <220000000>;
+		opp-level = <RPMH_REGULATOR_LEVEL_MIN_SVS>;
+		qcom,opp-cx-level = <RPMH_REGULATOR_LEVEL_LOW_SVS>;
+		opp-peak-kBps = <1761718>;
+	};
+	opp-285000000 {
+		opp-hz = /bits/ 64 <285000000>;
+		opp-level = <RPMH_REGULATOR_LEVEL_LOW_SVS_D1>;
+		qcom,opp-cx-level = <RPMH_REGULATOR_LEVEL_LOW_SVS>;
+		opp-peak-kBps = <1761718>;
+	};
+	opp-324000000 {
+		opp-hz = /bits/ 64 <324000000>;
+		opp-level = <RPMH_REGULATOR_LEVEL_LOW_SVS>;
+		qcom,opp-cx-level = <RPMH_REGULATOR_LEVEL_LOW_SVS>;
+		opp-peak-kBps = <1761718>;
+	};
+	opp-364000000 {
+		opp-hz = /bits/ 64 <364000000>;
+		opp-level = <RPMH_REGULATOR_LEVEL_LOW_SVS_L1>;
+		qcom,opp-cx-level = <RPMH_REGULATOR_LEVEL_SVS>;
+		opp-peak-kBps = <2136718>;
+	};
+	opp-439000000 {
+		opp-hz = /bits/ 64 <439000000>;
+		opp-level = <RPMH_REGULATOR_LEVEL_LOW_SVS_L2>;
+		qcom,opp-cx-level = <RPMH_REGULATOR_LEVEL_SVS>;
+		opp-peak-kBps = <6074218>;
+	};
+	opp-515000000 {
+		opp-hz = /bits/ 64 <515000000>;
+		opp-level = <RPMH_REGULATOR_LEVEL_SVS>;
+		qcom,opp-cx-level = <RPMH_REGULATOR_LEVEL_SVS>;
+		opp-peak-kBps = <6074218>;
+	};
+	opp-580000000 {
+		opp-hz = /bits/ 64 <580000000>;
+		opp-level = <RPMH_REGULATOR_LEVEL_SVS_L0>;
+		qcom,opp-cx-level = <RPMH_REGULATOR_LEVEL_SVS_L1>;
+		opp-peak-kBps = <8171875>;
+	};
+	opp-645000000 {
+		opp-hz = /bits/ 64 <645000000>;
+		opp-level = <RPMH_REGULATOR_LEVEL_SVS_L1>;
+		qcom,opp-cx-level = <RPMH_REGULATOR_LEVEL_SVS_L1>;
+		opp-peak-kBps = <8171875>;
+	};
+	opp-710000000 {
+		opp-hz = /bits/ 64 <710000000>;
+		opp-level = <RPMH_REGULATOR_LEVEL_SVS_L2>;
+		qcom,opp-cx-level = <RPMH_REGULATOR_LEVEL_NOM>;
+		opp-peak-kBps = <12484375>;
+	};
+	opp-765000000 {
+		opp-hz = /bits/ 64 <765000000>;
+		opp-level = <RPMH_REGULATOR_LEVEL_NOM>;
+		qcom,opp-cx-level = <RPMH_REGULATOR_LEVEL_NOM>;
+		opp-peak-kBps = <12484375>;
+	};
+	opp-815000000 {
+		opp-hz = /bits/ 64 <815000000>;
+		opp-level = <RPMH_REGULATOR_LEVEL_NOM_L1>;
+		qcom,opp-cx-level = <RPMH_REGULATOR_LEVEL_NOM_L1>;
+		opp-peak-kBps = <13085937>;
+	};
+	opp-862000000 {
+		opp-hz = /bits/ 64 <862000000>;
+		opp-level = <RPMH_REGULATOR_LEVEL_TURBO>;
+		qcom,opp-cx-level = <RPMH_REGULATOR_LEVEL_TURBO>;
+		opp-peak-kBps = <13085937>;
+	};
+	opp-900000000 {
+		opp-hz = /bits/ 64 <900000000>;
+		opp-level = <RPMH_REGULATOR_LEVEL_TURBO_L1>;
+		qcom,opp-cx-level = <RPMH_REGULATOR_LEVEL_TURBO_L1>;
+		opp-peak-kBps = <13085937>;
+	};
+};
