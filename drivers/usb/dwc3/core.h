@@ -1066,6 +1066,10 @@ struct dwc3_glue_ops {
  * @role_sw: usb_role_switch handle
  * @role_switch_default_mode: default operation mode of controller while
  *			usb role is USB_ROLE_NONE.
+ * @role_mux_device: optional board data route for device mode
+ * @role_mux_host: optional board data route for host mode
+ * @role_mux_active: currently selected, locked data route
+ * @role_mux_delay_us: board mux settling time before controller role changes
  * @usb_psy: pointer to power supply interface.
  * @usb_psy_name: name of the USB power supply
  * @psy_nb: power supply notifier block
@@ -1266,6 +1270,10 @@ struct dwc3 {
 	enum usb_phy_interface	hsphy_mode;
 	struct usb_role_switch	*role_sw;
 	enum usb_dr_mode	role_switch_default_mode;
+	struct mux_state	*role_mux_device;
+	struct mux_state	*role_mux_host;
+	struct mux_state	*role_mux_active;
+	u32			role_mux_delay_us;
 
 	struct power_supply	*usb_psy;
 	const char		*usb_psy_name;
