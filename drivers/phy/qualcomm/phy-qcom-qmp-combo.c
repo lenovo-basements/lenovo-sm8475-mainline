@@ -4810,6 +4810,11 @@ static int qmp_combo_typec_mux_set(struct typec_mux_dev *mux, struct typec_mux_s
 
 	guard(mutex)(&qmp->phy_mutex);
 
+	if (state->mode == TYPEC_STATE_SAFE) {
+		qmp->qmpphy_mode = QMPPHY_MODE_USB3_ONLY;
+		return 0;
+	}
+
 	if (state->alt)
 		svid = state->alt->svid;
 	else
