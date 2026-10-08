@@ -341,7 +341,7 @@ static int a6xx_hfi_send_perf_table(struct a6xx_gmu *gmu)
 
 	for (i = 0; i < gmu->nr_gpu_freqs; i++) {
 		msg.gx_votes[i].vote = gmu->gx_arc_votes[i];
-		msg.gx_votes[i].acd = 0xffffffff;
+		msg.gx_votes[i].acd = gmu->gx_cx_votes[i];
 		msg.gx_votes[i].freq = gmu->gpu_freqs[i] / 1000;
 	}
 
