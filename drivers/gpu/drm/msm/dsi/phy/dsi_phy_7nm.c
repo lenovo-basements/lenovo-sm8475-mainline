@@ -53,6 +53,9 @@
 #define DSI_PHY_7NM_QUIRK_V5_2		BIT(4)
 /* Hardware is V7.2 */
 #define DSI_PHY_7NM_QUIRK_V7_2		BIT(5)
+/* Hardware is V4.3.2 */
+/* SM8475 has the V4.3 sequencing with revised LDO settings. */
+#define DSI_PHY_7NM_QUIRK_V4_3_2		BIT(6)
 
 struct dsi_pll_config {
 	bool enable_ssc;
@@ -1092,6 +1095,11 @@ static int dsi_7nm_phy_enable(struct msm_dsi_phy *phy,
 
 	spin_lock_irqsave(&pll->pll_enable_lock, flags);
 	pll->pll_enable_cnt = 1;
+	if (phy->cfg->quirks & DSI_PHY_7NM_QUIRK_V4_3_2) {
+		vreg_ctrl_0 = phy->cphy_mode ? 0x45 : 0x44;
+		vreg_ctrl_1 = phy->cphy_mode ? 0x41 : 0x19;
+	}
+
 	/* de-assert digital and pll power down */
 	data = DSI_7nm_PHY_CMN_CTRL_0_DIGTOP_PWRDN_B |
 	       DSI_7nm_PHY_CMN_CTRL_0_PLL_SHUTDOWNB;
@@ -1402,6 +1410,29 @@ const struct msm_dsi_phy_cfg dsi_phy_5nm_8450_cfgs = {
 	.io_start = { 0xae94400, 0xae96400 },
 	.num_dsi_phy = 2,
 	.quirks = DSI_PHY_7NM_QUIRK_V4_3,
+};
+
+const struct msm_dsi_phy_cfg dsi_phy_4nm_8475_cfgs = {
+	.has_phy_lane = true,
+	.regulator_data = dsi_phy_7nm_97800uA_regulators,
+	.num_regulators = ARRAY_SIZE(dsi_phy_7nm_97800uA_regulators),
+	.ops = {
+		.enable = dsi_7nm_phy_enable,
+		.disable = dsi_7nm_phy_disable,
+		.pll_init = dsi_pll_7nm_init,
+		.save_pll_state = dsi_7nm_pll_save_state,
+		.restore_pll_state = dsi_7nm_pll_restore_state,
+		.set_continuous_clock = dsi_7nm_set_continuous_clock,
+	},
+	.min_pll_rate = 600000000UL,
+#ifdef CONFIG_64BIT
+	.max_pll_rate = 5000000000UL,
+#else
+	.max_pll_rate = ULONG_MAX,
+#endif
+	.io_start = { 0xae94400, 0xae96400 },
+	.num_dsi_phy = 2,
+	.quirks = DSI_PHY_7NM_QUIRK_V4_3 | DSI_PHY_7NM_QUIRK_V4_3_2,
 };
 
 const struct msm_dsi_phy_cfg dsi_phy_5nm_8775p_cfgs = {
