@@ -1498,6 +1498,17 @@ static const struct adreno_info a7xx_gpus[] = {
 			.dyn_pwrup_reglist = &a7xx_dyn_pwrup_reglist,
 			.gbif_cx = a640_gbif,
 			.gmu_cgc_mode = 0x00020000,
+			.bcms = (const struct a6xx_bcm[]) {
+				{ .name = "SH0", .buswidth = 16 },
+				{ .name = "MC0", .buswidth = 4 },
+				{
+					.name = "ACV",
+					.fixed = true,
+					.perfmode = BIT(1),
+					.perfmode_bw = 1,
+				},
+				{ /* sentinel */ },
+			},
 		},
 		.preempt_record_size = 2860 * SZ_1K,
 	}, {

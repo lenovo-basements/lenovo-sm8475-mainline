@@ -320,7 +320,7 @@ static int a6xx_gmu_start(struct a6xx_gmu *gmu)
 	gmu_write(gmu, REG_A6XX_GMU_CM3_SYSRESET, 0);
 
 	ret = gmu_poll_timeout(gmu, REG_A6XX_GMU_CM3_FW_INIT_RESULT, val,
-		(val & mask) == reset_val, 100, 100000);
+		(val & mask) == reset_val, 100, 10000);
 
 	if (ret)
 		DRM_DEV_ERROR(gmu->dev, "GMU firmware initialization timed out\n");
@@ -1831,6 +1831,66 @@ static int a6xx_gmu_rpmh_dep_votes_init(struct device *dev, u32 *votes,
 	return 0;
 }
 
+static int a6xx_gmu_rpmh_cx_votes_init(struct msm_gpu *gpu, struct a6xx_gmu *gmu)
+{
+	struct adreno_gpu *adreno_gpu = to_adreno_gpu(gpu);
+	const u16 *cx;
+	size_t count;
+	int i;
+
+	memset(gmu->gx_cx_votes, 0xff, sizeof(gmu->gx_cx_votes));
+	if (!adreno_is_a730(adreno_gpu))
+		return 0;
+
+	cx = cmd_db_read_aux_data("cx.lvl", &count);
+	if (IS_ERR(cx))
+		return PTR_ERR(cx);
+	if (!count || count % sizeof(*cx))
+		return -EINVAL;
+	count /= sizeof(*cx);
+
+	for (i = 1; i < gmu->nr_gpu_freqs; i++) {
+		struct dev_pm_opp *opp;
+		struct device_node *np;
+		u32 level;
+		size_t j;
+		int ret;
+
+		opp = dev_pm_opp_find_freq_exact(&gpu->pdev->dev,
+					      gmu->gpu_freqs[i], true);
+		if (IS_ERR(opp))
+			return PTR_ERR(opp);
+		np = dev_pm_opp_get_of_node(opp);
+		if (!of_property_present(np, "qcom,opp-cx-level")) {
+			of_node_put(np);
+			dev_pm_opp_put(opp);
+			continue;
+		}
+		ret = of_property_read_u32(np, "qcom,opp-cx-level", &level);
+		of_node_put(np);
+		dev_pm_opp_put(opp);
+		if (ret)
+			return ret;
+
+		for (j = 0; j < count; j++)
+			if (cx[j] >= level)
+				break;
+		if (j == count) {
+			dev_err(&gpu->pdev->dev, "CX level %u unavailable for %lu Hz\n",
+				level, gmu->gpu_freqs[i]);
+			return -EINVAL;
+		}
+		gmu->gx_cx_votes[i] = j;
+	}
+	for (i = 1; i < gmu->nr_gpu_freqs; i++)
+		if (gmu->gx_cx_votes[i] != U32_MAX) {
+			gmu->gx_cx_votes[0] = 0;
+			break;
+		}
+
+	return 0;
+}
+
 /*
  * The GMU votes with the RPMh for itself and on behalf of the GPU but we need
  * to construct the list of votes on the CPU and send it over. Query the RPMh
@@ -1848,6 +1908,10 @@ static int a6xx_gmu_rpmh_votes_init(struct a6xx_gmu *gmu)
 	const char *sec_id;
 	const u16 *gmxc;
 	int ret;
+
+	ret = a6xx_gmu_rpmh_cx_votes_init(gpu, gmu);
+	if (ret)
+		return ret;
 
 	gmxc = cmd_db_read_aux_data("gmxc.lvl", NULL);
 	if (gmxc == ERR_PTR(-EPROBE_DEFER))
