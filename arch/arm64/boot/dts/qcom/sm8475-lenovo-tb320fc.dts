@@ -227,6 +227,7 @@
 	regulators-0 {
 		compatible = "qcom,pm8350-rpmh-regulators";
 		qcom,pmic-id = "b";
+		vdd-l1-l4-supply = <&vreg_s11b_wifi>;
 		vdd-s10-supply = <&vph_pwr>;
 		vdd-s11-supply = <&vph_pwr>;
 		vdd-s12-supply = <&vph_pwr>;
@@ -246,6 +247,12 @@
 			regulator-name = "vreg_s11b_wifi";
 			regulator-min-microvolt = <966000>;
 			regulator-max-microvolt = <1170000>;
+		};
+		vreg_l1b_0p912: ldo1 {
+			regulator-name = "vreg_l1b_0p912";
+			regulator-min-microvolt = <912000>;
+			regulator-max-microvolt = <912000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
 		};
 		vreg_l2b_3p072: ldo2 {
 			regulator-name = "vreg_l2b_3p072";
@@ -355,12 +362,113 @@
 
 &usb_1 {
 	status = "okay";
-	dr_mode = "peripheral";
+	dr_mode = "otg";
+	role-switch-default-mode = "peripheral";
 	maximum-speed = "high-speed";
 	qcom,select-utmi-as-pipe-clk;
 	phys = <&usb_1_hsphy>;
 	phy-names = "usb2-phy";
-	/delete-property/ usb-role-switch;
+	usb-role-switch;
+	mux-states = <&usb_data_mux 0>, <&usb_data_mux 1>;
+	mux-state-names = "usb-device", "usb-host";
+	mux-settle-time-us = <50000>;
+};
+
+/ {
+	usb_data_mux: mux-controller {
+		compatible = "gpio-mux";
+		#mux-state-cells = <1>;
+		mux-gpios = <&tlmm 88 GPIO_ACTIVE_HIGH>;
+		idle-state = <0>;
+	};
+
+	pmic-glink {
+		compatible = "qcom,sm8450-pmic-glink", "qcom,pmic-glink";
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		connector@0 {
+			compatible = "usb-c-connector";
+			reg = <0>;
+			power-role = "dual";
+			data-role = "dual";
+			ports {
+				#address-cells = <1>;
+				#size-cells = <0>;
+				port@0 {
+					reg = <0>;
+				};
+				port@1 {
+					reg = <1>;
+					usb_primary_ss: endpoint {
+						remote-endpoint = <&usb_1_qmpphy_out>;
+					};
+				};
+				port@2 {
+					reg = <2>;
+					usb_primary_sbu: endpoint {
+						remote-endpoint = <&fsa4480_primary_sbu>;
+					};
+				};
+			};
+		};
+
+		connector@1 {
+			compatible = "usb-c-connector";
+			reg = <1>;
+			power-role = "dual";
+			data-role = "dual";
+
+			/* Initial host policy follows the keyboard/hub connector only. */
+			port {
+				usb_keyboard_hs: endpoint {
+					remote-endpoint = <&usb_1_dwc3_hs>;
+				};
+			};
+		};
+	};
+};
+
+&usb_1_dwc3_hs {
+	remote-endpoint = <&usb_keyboard_hs>;
+};
+
+&usb_1_qmpphy {
+	compatible = "qcom,sm8475-qmp-usb3-dp-phy";
+	vdda-phy-supply = <&vreg_l1b_0p912>;
+	vdda-pll-supply = <&vreg_l10c_1p2>;
+	status = "okay";
+};
+
+&usb_1_qmpphy_out {
+	remote-endpoint = <&usb_primary_ss>;
+};
+
+&i2c5 {
+	typec-mux@43 {
+		compatible = "fcs,fsa4480";
+		reg = <0x43>;
+		mode-switch;
+		orientation-switch;
+		port {
+			fsa4480_primary_sbu: endpoint {
+				remote-endpoint = <&usb_primary_sbu>;
+			};
+		};
+	};
+};
+
+&mdss_dp0 {
+	status = "okay";
+};
+
+&mdss_dp0_out {
+	data-lanes = <0 1 2 3>;
+};
+
+&remoteproc_adsp {
+	firmware-name = "qcom/lenovo/tb320fc/adsp/adsp.mdt";
+	status = "okay";
 };
 
 &sdhc_2 {
