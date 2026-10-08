@@ -752,15 +752,19 @@ static int dwc3_qcom_pm_suspend(struct device *dev)
 	bool wakeup = device_may_wakeup(dev);
 	int ret;
 
+	qcom->pm_suspended = true;
+
 	ret = dwc3_pm_suspend(&qcom->dwc);
-	if (ret)
+	if (ret) {
+		qcom->pm_suspended = false;
 		return ret;
+	}
 
 	ret = dwc3_qcom_suspend(qcom, wakeup);
-	if (ret)
+	if (ret) {
+		qcom->pm_suspended = false;
 		return ret;
-
-	qcom->pm_suspended = true;
+	}
 
 	return 0;
 }
@@ -776,11 +780,11 @@ static int dwc3_qcom_pm_resume(struct device *dev)
 	if (ret)
 		return ret;
 
-	qcom->pm_suspended = false;
-
 	ret = dwc3_pm_resume(&qcom->dwc);
 	if (ret)
 		return ret;
+
+	qcom->pm_suspended = false;
 
 	return 0;
 }

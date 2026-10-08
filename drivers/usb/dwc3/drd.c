@@ -8,6 +8,7 @@
  */
 
 #include <linux/extcon.h>
+#include <linux/mux/consumer.h>
 #include <linux/of_platform.h>
 #include <linux/platform_device.h>
 #include <linux/property.h>
@@ -447,11 +448,85 @@ static int dwc3_drd_notifier(struct notifier_block *nb,
 
 #if IS_ENABLED(CONFIG_USB_ROLE_SWITCH)
 #define ROLE_SWITCH 1
+static int dwc3_select_role_mux(struct dwc3 *dwc, bool host)
+{
+	struct mux_state *target = host ? dwc->role_mux_host : dwc->role_mux_device;
+	struct mux_state *previous = dwc->role_mux_active;
+	int ret;
+
+	if (!target || target == previous)
+		return 0;
+
+	if (previous) {
+		ret = mux_state_deselect(previous);
+		dwc->role_mux_active = NULL;
+		if (ret)
+			return ret;
+	}
+
+	ret = mux_state_select_delay(target, dwc->role_mux_delay_us);
+	if (ret) {
+		/* Leave the controller in its prior role if route selection fails. */
+		if (previous) {
+			int restore = mux_state_select_delay(previous, dwc->role_mux_delay_us);
+
+			if (!restore)
+				dwc->role_mux_active = previous;
+			else
+				dev_err(dwc->dev, "Failed to restore USB data route: %d\n", restore);
+		}
+		return ret;
+	}
+	dwc->role_mux_active = target;
+	return 0;
+}
+
+static void dwc3_release_role_mux(void *data)
+{
+	struct dwc3 *dwc = data;
+
+	if (dwc->role_mux_active) {
+		int ret = mux_state_deselect(dwc->role_mux_active);
+
+		if (ret)
+			dev_warn(dwc->dev, "Failed to release USB data route: %d\n", ret);
+		dwc->role_mux_active = NULL;
+	}
+}
+
+static int dwc3_setup_role_mux(struct dwc3 *dwc, bool host)
+{
+	int ret;
+
+	if (!device_property_present(dwc->dev, "mux-states"))
+		return 0;
+
+	dwc->role_mux_device = devm_mux_state_get_optional(dwc->dev, "usb-device");
+	if (IS_ERR(dwc->role_mux_device))
+		return dev_err_probe(dwc->dev, PTR_ERR(dwc->role_mux_device), "Device data route unavailable\n");
+	dwc->role_mux_host = devm_mux_state_get_optional(dwc->dev, "usb-host");
+	if (IS_ERR(dwc->role_mux_host))
+		return dev_err_probe(dwc->dev, PTR_ERR(dwc->role_mux_host), "Host data route unavailable\n");
+	if (!dwc->role_mux_device || !dwc->role_mux_host)
+		return dev_err_probe(dwc->dev, -EINVAL, "Both USB data routes are required\n");
+
+	device_property_read_u32(dwc->dev, "mux-settle-time-us", &dwc->role_mux_delay_us);
+	if (dwc->role_mux_delay_us > 1000000)
+		return -EINVAL;
+
+	ret = dwc3_select_role_mux(dwc, host);
+	if (ret)
+		return dev_err_probe(dwc->dev, ret, "Default USB data route unavailable\n");
+
+	return devm_add_action_or_reset(dwc->dev, dwc3_release_role_mux, dwc);
+}
+
 static int dwc3_usb_role_switch_set(struct usb_role_switch *sw,
 				    enum usb_role role)
 {
 	struct dwc3 *dwc = usb_role_switch_get_drvdata(sw);
 	u32 mode;
+	int ret;
 
 	switch (role) {
 	case USB_ROLE_HOST:
@@ -467,6 +542,10 @@ static int dwc3_usb_role_switch_set(struct usb_role_switch *sw,
 			mode = DWC3_GCTL_PRTCAP_DEVICE;
 		break;
 	}
+
+	ret = dwc3_select_role_mux(dwc, mode == DWC3_GCTL_PRTCAP_HOST);
+	if (ret)
+		return ret;
 
 	dwc3_pre_set_role(dwc, role);
 	dwc3_set_mode(dwc, mode);
@@ -505,6 +584,7 @@ static int dwc3_setup_role_switch(struct dwc3 *dwc)
 {
 	struct usb_role_switch_desc dwc3_role_switch = {NULL};
 	u32 mode;
+	int ret;
 
 	dwc->role_switch_default_mode = usb_get_role_switch_default_mode(dwc->dev);
 	if (dwc->role_switch_default_mode == USB_DR_MODE_HOST) {
@@ -513,6 +593,10 @@ static int dwc3_setup_role_switch(struct dwc3 *dwc)
 		dwc->role_switch_default_mode = USB_DR_MODE_PERIPHERAL;
 		mode = DWC3_GCTL_PRTCAP_DEVICE;
 	}
+	ret = dwc3_setup_role_mux(dwc, mode == DWC3_GCTL_PRTCAP_HOST);
+	if (ret)
+		return ret;
+
 	dwc3_set_mode(dwc, mode);
 
 	dwc3_role_switch.fwnode = dev_fwnode(dwc->dev);
