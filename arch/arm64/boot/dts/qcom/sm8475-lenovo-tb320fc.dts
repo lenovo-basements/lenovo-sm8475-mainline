@@ -54,6 +54,32 @@
 		};
 	};
 
+	wifi-pmu {
+		compatible = "qcom,wcn6855-pmu";
+		pinctrl-names = "default";
+		pinctrl-0 = <&wlan_enable_default &bt_enable_default &wlan_xo_default>;
+		wlan-enable-gpios = <&tlmm 80 GPIO_ACTIVE_HIGH>;
+		bt-enable-gpios = <&tlmm 81 GPIO_ACTIVE_HIGH>;
+		swctrl-gpios = <&tlmm 82 GPIO_ACTIVE_HIGH>;
+		xo-clk-gpios = <&tlmm 204 GPIO_ACTIVE_HIGH>;
+		vddio-supply = <&vreg_s10b_1p8>;
+		vddaon-supply = <&vreg_s11b_wifi>;
+		vddpmu-supply = <&vreg_s12b_1p25>;
+		vddpmumx-supply = <&vreg_s2e_wifi>;
+		vddpmucx-supply = <&vreg_s11b_wifi>;
+		vddrfa0p95-supply = <&vreg_s11b_wifi>;
+		vddrfa1p3-supply = <&vreg_s12b_1p25>;
+		vddrfa1p9-supply = <&vreg_s1c_wifi>;
+		vddpcie1p3-supply = <&vreg_s12b_1p25>;
+		vddpcie1p9-supply = <&vreg_s1c_wifi>;
+
+		regulators {
+			wcn_aon: ldo1 {
+				regulator-name = "wcn_aon";
+			};
+		};
+	};
+
 	vph_pwr: regulator-vph-pwr {
 		compatible = "regulator-fixed";
 		regulator-name = "vph_pwr";
@@ -202,6 +228,7 @@
 		compatible = "qcom,pm8350-rpmh-regulators";
 		qcom,pmic-id = "b";
 		vdd-s10-supply = <&vph_pwr>;
+		vdd-s11-supply = <&vph_pwr>;
 		vdd-s12-supply = <&vph_pwr>;
 		vdd-l2-l7-supply = <&vreg_bob>;
 		vdd-l3-l5-supply = <&vreg_bob>;
@@ -214,6 +241,11 @@
 			regulator-name = "vreg_s12b_1p25";
 			regulator-min-microvolt = <1224000>;
 			regulator-max-microvolt = <1400000>;
+		};
+		vreg_s11b_wifi: smps11 {
+			regulator-name = "vreg_s11b_wifi";
+			regulator-min-microvolt = <966000>;
+			regulator-max-microvolt = <1170000>;
 		};
 		vreg_l2b_3p072: ldo2 {
 			regulator-name = "vreg_l2b_3p072";
@@ -232,8 +264,14 @@
 		compatible = "qcom,pm8350c-rpmh-regulators";
 		qcom,pmic-id = "c";
 		vdd-bob-supply = <&vph_pwr>;
+		vdd-s1-supply = <&vph_pwr>;
 		vdd-l6-l9-l11-supply = <&vreg_bob>;
 		vdd-l10-supply = <&vreg_s12b_1p25>;
+		vreg_s1c_wifi: smps1 {
+			regulator-name = "vreg_s1c_wifi";
+			regulator-min-microvolt = <1900000>;
+			regulator-max-microvolt = <2024000>;
+		};
 		vreg_bob: bob {
 			regulator-name = "vreg_bob";
 			regulator-min-microvolt = <3008000>;
@@ -265,6 +303,16 @@
 			regulator-min-microvolt = <2960000>;
 			regulator-max-microvolt = <2960000>;
 			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+	};
+	regulators-2 {
+		compatible = "qcom,pmr735a-rpmh-regulators";
+		qcom,pmic-id = "e";
+		vdd-s2-supply = <&vph_pwr>;
+		vreg_s2e_wifi: smps2 {
+			regulator-name = "vreg_s2e_wifi";
+			regulator-min-microvolt = <1012000>;
+			regulator-max-microvolt = <1040000>;
 		};
 	};
 };
@@ -470,5 +518,49 @@
 		opp-level = <RPMH_REGULATOR_LEVEL_TURBO_L1>;
 		qcom,opp-cx-level = <RPMH_REGULATOR_LEVEL_TURBO_L1>;
 		opp-peak-kBps = <13085937>;
+	};
+};
+
+&pcie0 {
+	max-link-speed = <2>;
+	status = "okay";
+};
+
+&pcie0_phy {
+	compatible = "qcom,sm8475-qmp-gen3x1-pcie-phy";
+	vdda-phy-supply = <&vreg_l5b_0p88>;
+	vdda-pll-supply = <&vreg_l10c_1p2>;
+	status = "okay";
+};
+
+&pcieport0 {
+	wifi@0 {
+		compatible = "pci17cb,1103";
+		reg = <0x10000 0 0 0 0>;
+		vddaon-supply = <&wcn_aon>;
+	};
+};
+
+&tlmm {
+	wlan_enable_default: wlan-enable-default-state {
+		pins = "gpio80";
+		function = "gpio";
+		drive-strength = <16>;
+		bias-pull-down;
+		output-low;
+	};
+	bt_enable_default: bt-enable-default-state {
+		pins = "gpio81";
+		function = "gpio";
+		drive-strength = <16>;
+		bias-pull-down;
+		output-low;
+	};
+	wlan_xo_default: wlan-xo-default-state {
+		pins = "gpio204";
+		function = "gpio";
+		drive-strength = <16>;
+		bias-pull-down;
+		output-low;
 	};
 };

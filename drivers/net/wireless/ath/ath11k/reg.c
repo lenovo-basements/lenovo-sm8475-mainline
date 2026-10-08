@@ -87,7 +87,8 @@ ath11k_reg_notifier(struct wiphy *wiphy, struct regulatory_request *request)
 
 	if (!ath11k_regdom_changes(ar, request->alpha2)) {
 		ath11k_dbg(ar->ab, ATH11K_DBG_REG, "Country is already set\n");
-		return;
+		memcpy(&ar->alpha2, request->alpha2, 2);
+		goto stop_11d;
 	}
 
 	/* Set the country code to the firmware and will receive
@@ -111,6 +112,7 @@ ath11k_reg_notifier(struct wiphy *wiphy, struct regulatory_request *request)
 				    "INIT Country code set to fw failed : %d\n", ret);
 	}
 
+stop_11d:
 	ath11k_mac_11d_scan_stop(ar);
 	ar->regdom_set_by_user = true;
 }
