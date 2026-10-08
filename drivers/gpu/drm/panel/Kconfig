@@ -654,14 +654,6 @@ config DRM_PANEL_NOVATEK_NT35950
 	  Sharp panels used in Sony Xperia Z5 Premium and XZ Premium
 	  mobile phones.
 
-config DRM_PANEL_LENOVO_TB320FC
-	tristate "Experimental Lenovo TB320FC normal NT36523N panel"
-	depends on OF && DRM_MIPI_DSI && BACKLIGHT_CLASS_DEVICE
-	select DRM_DISPLAY_DSC_HELPER
-	help
-	  Experimental dual C-PHY, DSC video panel support for the Lenovo
-	  Legion Y700 Gen 2.
-
 config DRM_PANEL_NOVATEK_NT36523
 	tristate "Novatek NT36523 panel driver"
 	depends on OF

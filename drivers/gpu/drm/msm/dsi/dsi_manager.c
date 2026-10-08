@@ -528,7 +528,7 @@ int msm_dsi_manager_cmd_xfer(int id, const struct mipi_dsi_msg *msg)
 	}
 
 	ret = is_read ? msm_dsi_host_cmd_rx(host, msg) :
-			msm_dsi_host_cmd_tx(host, msg, need_sync);
+			msm_dsi_host_cmd_tx(host, msg);
 
 	msm_dsi_host_xfer_restore(host, msg);
 
@@ -539,16 +539,16 @@ restore_host0:
 	return ret;
 }
 
-bool msm_dsi_manager_cmd_xfer_trigger(int id, u32 dma_base, u32 len, bool need_sync)
+bool msm_dsi_manager_cmd_xfer_trigger(int id, u32 dma_base, u32 len)
 {
 	struct msm_dsi *msm_dsi = dsi_mgr_get_dsi(id);
 	struct msm_dsi *msm_dsi0 = dsi_mgr_get_dsi(DSI_0);
 	struct mipi_dsi_host *host = msm_dsi->host;
 
-	if (need_sync && (id == DSI_0))
+	if (IS_SYNC_NEEDED() && (id == DSI_0))
 		return false;
 
-	if (need_sync && msm_dsi0)
+	if (IS_SYNC_NEEDED() && msm_dsi0)
 		msm_dsi_host_cmd_xfer_commit(msm_dsi0->host, dma_base, len);
 
 	msm_dsi_host_cmd_xfer_commit(host, dma_base, len);

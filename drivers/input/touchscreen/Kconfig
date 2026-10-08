@@ -691,18 +691,6 @@ config TOUCHSCREEN_MTOUCH
 	  To compile this driver as a module, choose M here: the
 	  module will be called mtouch.
 
-config TOUCHSCREEN_NOVATEK_NT36523N
-	tristate "Novatek NT36523N SPI touchscreen"
-	depends on SPI && GPIOLIB
-	select FW_LOADER
-	select CRYPTO_LIB_SHA256
-	help
-	  Say Y here if you have a Novatek NT36523N touchscreen.
-	  If unsure, say N.
-
-	  To compile this driver as a module, choose M here: the
-	  module will be called novatek-nvt-ts.
-
 config TOUCHSCREEN_NOVATEK_NVT_TS
 	tristate "Novatek NT11205 touchscreen support"
 	depends on I2C
