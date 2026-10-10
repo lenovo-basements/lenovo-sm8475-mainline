@@ -817,6 +817,12 @@ void msm_dsi_phy_set_usecase(struct msm_dsi_phy *phy,
 		phy->usecase = uc;
 }
 
+void msm_dsi_phy_post_link_enable(struct msm_dsi_phy *phy)
+{
+	if (phy && phy->cfg->ops.post_link_enable)
+		phy->cfg->ops.post_link_enable(phy);
+}
+
 /* Returns true if we have to clear DSI_LANE_CTRL.HS_REQ_SEL_PHY */
 bool msm_dsi_phy_set_continuous_clock(struct msm_dsi_phy *phy, bool enable)
 {

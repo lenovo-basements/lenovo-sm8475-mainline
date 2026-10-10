@@ -12,6 +12,8 @@
 #include "disp/msm_disp_snapshot.h"
 #include "msm_dsc_helper.h"
 
+#include <linux/of.h>
+
 #include <drm/display/drm_dsc_helper.h>
 #include <drm/drm_managed.h>
 
@@ -130,14 +132,10 @@ static void drm_mode_to_intf_timing_params(
 	if (phys_enc->hw_intf->cap->type != INTF_DP && timing->compression_en) {
 		struct drm_dsc_config *dsc =
 		       dpu_encoder_get_dsc_config(phys_enc->parent);
-		/*
-		 * TODO: replace drm_dsc_get_bpp_int with logic to handle
-		 * fractional part if there is fraction
-		 */
-		timing->width = timing->width * drm_dsc_get_bpp_int(dsc) /
-				(dsc->bits_per_component * 3);
+		timing->dce_bytes_per_line = msm_dsc_get_bytes_per_intf(dsc, timing->width);
+		timing->width = DIV_ROUND_UP(timing->dce_bytes_per_line * 8,
+					   dsc->bits_per_component * 3);
 		timing->xres = timing->width;
-		timing->dce_bytes_per_line = msm_dsc_get_bytes_per_line(dsc);
 	}
 }
 
@@ -157,6 +155,43 @@ static u32 get_vertical_total(const struct dpu_hw_intf_timing_params *timing)
 	    timing->v_back_porch + timing->v_front_porch +
 	    timing->vsync_pulse_width;
 	return active + inactive;
+}
+
+static bool dpu_encoder_phys_vid_tb320fc_split(struct dpu_encoder_phys *phys_enc)
+{
+	const struct drm_dsc_config *dsc;
+
+	if (!phys_enc || !phys_enc->parent || !phys_enc->hw_intf ||
+	    !phys_enc->hw_intf->cap || !phys_enc->hw_pp ||
+	    !of_machine_is_compatible("lenovo,tb320fc") ||
+	    phys_enc->intf_mode != INTF_MODE_VIDEO ||
+	    phys_enc->hw_intf->cap->type != INTF_DSI ||
+	    phys_enc->cached_mode.hdisplay != 1600 ||
+	    phys_enc->cached_mode.vdisplay != 2560 ||
+	    dpu_encoder_use_dsc_merge(phys_enc->parent) ||
+	    dpu_encoder_helper_get_dsc(phys_enc) != (BIT(0) | BIT(1)))
+		return false;
+
+	dsc = dpu_encoder_get_dsc_config(phys_enc->parent);
+	if (!dsc || dsc->pic_width != 1600 || dsc->pic_height != 2560 ||
+	    dsc->slice_count != 2 || dsc->slice_width != 800)
+		return false;
+
+	return (phys_enc->split_role == ENC_ROLE_MASTER &&
+		phys_enc->hw_intf->idx == INTF_1 &&
+		phys_enc->hw_pp->idx == PINGPONG_0) ||
+	       (phys_enc->split_role == ENC_ROLE_SLAVE &&
+		phys_enc->hw_intf->idx == INTF_2 &&
+		phys_enc->hw_pp->idx == PINGPONG_1);
+}
+
+static bool dpu_encoder_phys_vid_tb320fc_prefetch(
+		struct dpu_encoder_phys *phys_enc,
+		const struct dpu_hw_intf_timing_params *timing)
+{
+	return dpu_encoder_phys_vid_tb320fc_split(phys_enc) &&
+	       timing->v_back_porch + timing->vsync_pulse_width >=
+	       phys_enc->hw_intf->cap->prog_fetch_lines_worst_case;
 }
 
 /*
@@ -188,7 +223,10 @@ static u32 programmable_fetch_get_num_lines(
 	if (start_of_frame_lines >= worst_case_needed_lines) {
 		DPU_DEBUG_VIDENC(phys_enc,
 				"prog fetch is not needed, large vbp+vsw\n");
-		actual_vfp_lines = 0;
+		if (dpu_encoder_phys_vid_tb320fc_prefetch(phys_enc, timing))
+			actual_vfp_lines = min_t(u32, 2, timing->v_front_porch);
+		else
+			actual_vfp_lines = 0;
 	} else if (timing->v_front_porch < needed_vfp_lines) {
 		/* Warn fetch needed, but not enough porch in panel config */
 		pr_warn_once
@@ -241,6 +279,9 @@ static void programmable_fetch_config(struct dpu_encoder_phys *phys_enc,
 		horiz_total = get_horizontal_total(timing);
 		vfp_fetch_start_vsync_counter =
 		    (vert_total - vfp_fetch_lines) * horiz_total + 1;
+		if (vfp_fetch_lines > 1 &&
+		    dpu_encoder_phys_vid_tb320fc_prefetch(phys_enc, timing))
+			vfp_fetch_start_vsync_counter += horiz_total;
 		f.enable = 1;
 		f.fetch_start = vfp_fetch_start_vsync_counter;
 	}
@@ -653,16 +694,22 @@ static void dpu_encoder_phys_vid_handle_post_kickoff(
 		struct dpu_encoder_phys *phys_enc)
 {
 	unsigned long lock_flags;
+	bool split_timing;
+	bool write_timing;
 
 	/*
 	 * Video mode must flush CTL before enabling timing engine
 	 * Video encoders need to turn on their interfaces now
 	 */
 	if (phys_enc->enable_state == DPU_ENC_ENABLING) {
+		split_timing = dpu_encoder_phys_vid_tb320fc_split(phys_enc);
+		write_timing = !split_timing || dpu_encoder_phys_vid_is_master(phys_enc);
 		trace_dpu_enc_phys_vid_post_kickoff(DRMID(phys_enc->parent),
 				    phys_enc->hw_intf->idx - INTF_0);
 		spin_lock_irqsave(phys_enc->enc_spinlock, lock_flags);
-		phys_enc->hw_intf->ops.enable_timing(phys_enc->hw_intf, 1);
+		/* Downstream starts the pair through CTL_INTF_MASTER alone. */
+		if (write_timing)
+			phys_enc->hw_intf->ops.enable_timing(phys_enc->hw_intf, 1);
 		spin_unlock_irqrestore(phys_enc->enc_spinlock, lock_flags);
 		phys_enc->enable_state = DPU_ENC_ENABLED;
 	}
