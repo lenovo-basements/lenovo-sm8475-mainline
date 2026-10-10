@@ -103,15 +103,20 @@ static void dpu_hw_dsc_config_1_2(struct dpu_hw_dsc *hw_dsc,
 
 	sblk = hw_dsc->caps->sblk;
 
+	num_active_slice_per_enc = dsc->slice_count;
+	if (mode & (DSC_MODE_SPLIT_PANEL | DSC_MODE_MULTIPLEX)) {
+		if (WARN_ON_ONCE(num_active_slice_per_enc % 2))
+			return;
+		num_active_slice_per_enc /= 2;
+	}
+	if (WARN_ON_ONCE(!num_active_slice_per_enc))
+		return;
+
 	if (mode & DSC_MODE_SPLIT_PANEL)
 		data |= BIT(0);
 
 	if (mode & DSC_MODE_MULTIPLEX)
 		data |= BIT(1);
-
-	num_active_slice_per_enc = dsc->slice_count;
-	if (mode & DSC_MODE_MULTIPLEX)
-		num_active_slice_per_enc = dsc->slice_count / 2;
 
 	data |= (num_active_slice_per_enc & 0x3) << 7;
 
