@@ -414,6 +414,11 @@
 &cryptobam {
 	status = "disabled";
 
+&remoteproc_slpi {
+	firmware-name = "qcom/lenovo/tb320fc/slpi/slpi.mdt";
+	status = "okay";
+};
+
 &sdhc_2 {
 	cd-gpios = <&tlmm 92 GPIO_ACTIVE_HIGH>;
 	cd-debounce-delay-ms = <200>;
