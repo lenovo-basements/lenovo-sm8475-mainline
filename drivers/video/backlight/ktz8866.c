@@ -6,10 +6,12 @@
  */
 
 #include <linux/backlight.h>
+#include <linux/delay.h>
 #include <linux/err.h>
 #include <linux/gpio/consumer.h>
 #include <linux/i2c.h>
 #include <linux/module.h>
+#include <linux/mod_devicetable.h>
 #include <linux/of.h>
 #include <linux/regmap.h>
 
@@ -48,6 +50,17 @@ struct ktz8866 {
 	struct regmap *regmap;
 	bool led_on;
 	struct gpio_desc *enable_gpio;
+	bool tb320fc;
+};
+
+/* register dimming, 10 uH boost and 22 mA sinks. taken from lenovo changes */
+static const struct reg_sequence tb320fc_config[] = {
+	{ BL_CFG1, 0x5a },
+	{ BL_OPTION2, 0xb7 },
+	{ PWM_RAMP_TIME, 0xa8 },
+	{ LCD_BOOST_CFG, 0x26 },
+	{ OUTP_CFG, 0x1e },
+	{ OUTN_CFG, 0x1e },
 };
 
 static const struct regmap_config ktz8866_regmap_config = {
@@ -72,18 +85,29 @@ static int ktz8866_backlight_update_status(struct backlight_device *backlight_de
 {
 	struct ktz8866 *ktz = bl_get_data(backlight_dev);
 	unsigned int brightness = backlight_get_brightness(backlight_dev);
+	int ret;
 
-	if (!ktz->led_on && brightness > 0) {
-		ktz8866_update_bits(ktz, BL_EN, BL_EN_BIT, BL_EN_BIT);
-		ktz->led_on = true;
-	} else if (brightness == 0) {
-		ktz8866_update_bits(ktz, BL_EN, BL_EN_BIT, 0);
+	if (!brightness) {
+		ret = ktz8866_update_bits(ktz, BL_EN, BL_EN_BIT, 0);
+		if (ret)
+			return ret;
 		ktz->led_on = false;
 	}
 
 	/* Set brightness */
-	ktz8866_write(ktz, BL_BRT_LSB, brightness & 0x7);
-	ktz8866_write(ktz, BL_BRT_MSB, (brightness >> 3) & 0xFF);
+	ret = ktz8866_write(ktz, BL_BRT_LSB, brightness & 0x7);
+	if (ret)
+		return ret;
+	ret = ktz8866_write(ktz, BL_BRT_MSB, (brightness >> 3) & 0xFF);
+	if (ret)
+		return ret;
+
+	if (!ktz->led_on && brightness) {
+		ret = ktz8866_update_bits(ktz, BL_EN, BL_EN_BIT, BL_EN_BIT);
+		if (ret)
+			return ret;
+		ktz->led_on = true;
+	}
 
 	return 0;
 }
@@ -93,35 +117,60 @@ static const struct backlight_ops ktz8866_backlight_ops = {
 	.update_status = ktz8866_backlight_update_status,
 };
 
-static void ktz8866_init(struct ktz8866 *ktz)
+static int ktz8866_init(struct ktz8866 *ktz)
 {
 	unsigned int val = 0;
+	int ret;
 
-	if (!of_property_read_u32(ktz->client->dev.of_node, "current-num-sinks", &val))
-		ktz8866_write(ktz, BL_EN, BIT(val) - 1);
-	else
-		/* Enable all 6 current sinks if the number of current sinks isn't specified. */
-		ktz8866_write(ktz, BL_EN, BIT(6) - 1);
-
-	if (!of_property_read_u32(ktz->client->dev.of_node, "kinetic,current-ramp-delay-ms", &val)) {
-		if (val <= 128)
-			ktz8866_write(ktz, BL_CFG2, BIT(7) | (ilog2(val) << 3) | PWM_HYST);
-		else
-			ktz8866_write(ktz, BL_CFG2, BIT(7) | ((5 + val / 64) << 3) | PWM_HYST);
+	if (ktz->tb320fc) {
+		ret = regmap_multi_reg_write(ktz->regmap, tb320fc_config,
+					     ARRAY_SIZE(tb320fc_config));
+		if (ret)
+			return ret;
 	}
 
-	if (!of_property_read_u32(ktz->client->dev.of_node, "kinetic,led-enable-ramp-delay-ms", &val)) {
-		if (val == 0)
-			ktz8866_write(ktz, BL_DIMMING, 0);
-		else {
+	if (!of_property_read_u32(ktz->client->dev.of_node, "current-num-sinks", &val)) {
+		if (!val || val > 6)
+			return -EINVAL;
+		ret = ktz8866_write(ktz, BL_EN, BIT(val) - 1);
+	} else {
+		/* Enable all 6 current sinks if the number of current sinks isn't specified. */
+		ret = ktz8866_write(ktz, BL_EN, BIT(6) - 1);
+	}
+	if (ret)
+		return ret;
+
+	if (!of_property_read_u32(ktz->client->dev.of_node,
+				  "kinetic,current-ramp-delay-ms", &val)) {
+		if (!val)
+			return -EINVAL;
+		if (val <= 128)
+			ret = ktz8866_write(ktz, BL_CFG2, BIT(7) | (ilog2(val) << 3) | PWM_HYST);
+		else
+			ret = ktz8866_write(ktz, BL_CFG2,
+					    BIT(7) | ((5 + val / 64) << 3) | PWM_HYST);
+		if (ret)
+			return ret;
+	}
+
+	if (!of_property_read_u32(ktz->client->dev.of_node,
+				  "kinetic,led-enable-ramp-delay-ms", &val)) {
+		if (val == 0) {
+			ret = ktz8866_write(ktz, BL_DIMMING, 0);
+		} else {
 			unsigned int ramp_off_time = ilog2(val) + 1;
 			unsigned int ramp_on_time = ramp_off_time << 4;
-			ktz8866_write(ktz, BL_DIMMING, ramp_on_time | ramp_off_time);
+
+			ret = ktz8866_write(ktz, BL_DIMMING, ramp_on_time | ramp_off_time);
 		}
+		if (ret)
+			return ret;
 	}
 
 	if (of_property_read_bool(ktz->client->dev.of_node, "kinetic,enable-lcd-bias"))
-		ktz8866_write(ktz, LCD_BIAS_CFG1, LCD_BIAS_EN);
+		return ktz8866_write(ktz, LCD_BIAS_CFG1, LCD_BIAS_EN);
+
+	return 0;
 }
 
 static int ktz8866_probe(struct i2c_client *client)
@@ -137,6 +186,7 @@ static int ktz8866_probe(struct i2c_client *client)
 		return -ENOMEM;
 
 	ktz->client = client;
+	ktz->tb320fc = of_device_is_compatible(client->dev.of_node, "lenovo,tb320fc-ktz8866");
 	ktz->regmap = devm_regmap_init_i2c(client, &ktz8866_regmap_config);
 	if (IS_ERR(ktz->regmap))
 		return dev_err_probe(&client->dev, PTR_ERR(ktz->regmap), "failed to init regmap\n");
@@ -151,6 +201,8 @@ static int ktz8866_probe(struct i2c_client *client)
 	ktz->enable_gpio = devm_gpiod_get_optional(&client->dev, "enable", GPIOD_OUT_HIGH);
 	if (IS_ERR(ktz->enable_gpio))
 		return PTR_ERR(ktz->enable_gpio);
+	if (ktz->tb320fc)
+		usleep_range(3500, 4000);
 
 	memset(&props, 0, sizeof(props));
 	props.type = BACKLIGHT_RAW;
@@ -162,22 +214,24 @@ static int ktz8866_probe(struct i2c_client *client)
 	props.scale = BACKLIGHT_SCALE_LINEAR;
 
 	backlight_dev = devm_backlight_device_register(&client->dev, "ktz8866-backlight",
-					&client->dev, ktz, &ktz8866_backlight_ops, &props);
+						     &client->dev, ktz,
+						     &ktz8866_backlight_ops, &props);
 	if (IS_ERR(backlight_dev))
 		return dev_err_probe(&client->dev, PTR_ERR(backlight_dev),
 				"failed to register backlight device\n");
 
-	ktz8866_init(ktz);
+	ret = ktz8866_init(ktz);
+	if (ret)
+		return dev_err_probe(&client->dev, ret, "failed to initialize backlight\n");
 
 	i2c_set_clientdata(client, backlight_dev);
-	backlight_update_status(backlight_dev);
-
-	return 0;
+	return backlight_update_status(backlight_dev);
 }
 
 static void ktz8866_remove(struct i2c_client *client)
 {
 	struct backlight_device *backlight_dev = i2c_get_clientdata(client);
+
 	backlight_dev->props.brightness = 0;
 	backlight_update_status(backlight_dev);
 }
@@ -189,6 +243,9 @@ static const struct i2c_device_id ktz8866_ids[] = {
 MODULE_DEVICE_TABLE(i2c, ktz8866_ids);
 
 static const struct of_device_id ktz8866_match_table[] = {
+	{
+		.compatible = "lenovo,tb320fc-ktz8866",
+	},
 	{
 		.compatible = "kinetic,ktz8866",
 	},
