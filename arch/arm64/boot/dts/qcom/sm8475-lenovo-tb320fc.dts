@@ -427,6 +427,11 @@
 	status = "okay";
 };
 
+&remoteproc_cdsp {
+	firmware-name = "qcom/lenovo/tb320fc/cdsp/cdsp.mdt";
+	status = "okay";
+};
+
 &remoteproc_slpi {
 	firmware-name = "qcom/lenovo/tb320fc/slpi/slpi.mdt";
 	status = "okay";
