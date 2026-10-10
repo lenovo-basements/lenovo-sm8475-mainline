@@ -1134,3 +1134,77 @@
 	};
 };
 
+&tlmm {
+	haptic_left_default: haptic-left-default-state {
+		irq-pins {
+			pins = "gpio38";
+			function = "gpio";
+			drive-strength = <2>;
+			bias-pull-up;
+			input-enable;
+		};
+
+		reset-pins {
+			pins = "gpio39";
+			function = "gpio";
+			drive-strength = <2>;
+			bias-disable;
+			output-low;
+		};
+	};
+
+	haptic_right_default: haptic-right-default-state {
+		irq-pins {
+			pins = "gpio171";
+			function = "gpio";
+			drive-strength = <2>;
+			bias-pull-up;
+			input-enable;
+		};
+
+		reset-pins {
+			pins = "gpio142";
+			function = "gpio";
+			drive-strength = <2>;
+			bias-disable;
+			output-low;
+		};
+	};
+};
+
+&qup_i2c11_data_clk {
+	drive-strength = <2>;
+	bias-pull-up;
+};
+
+&i2c11 {
+	clock-frequency = <400000>;
+	status = "okay";
+
+	haptic_left: vibrator@5a {
+		compatible = "awinic,aw86927";
+		reg = <0x5a>;
+		interrupt-parent = <&tlmm>;
+		interrupts = <38 IRQ_TYPE_EDGE_RISING>;
+		reset-gpios = <&tlmm 39 GPIO_ACTIVE_LOW>;
+		pinctrl-0 = <&haptic_left_default>;
+		pinctrl-names = "default";
+		label = "left";
+	};
+};
+
+&i2c14 {
+	clock-frequency = <400000>;
+	status = "okay";
+
+	haptic_right: vibrator@5a {
+		compatible = "awinic,aw86927";
+		reg = <0x5a>;
+		interrupt-parent = <&tlmm>;
+		interrupts = <171 IRQ_TYPE_EDGE_RISING>;
+		reset-gpios = <&tlmm 142 GPIO_ACTIVE_LOW>;
+		pinctrl-0 = <&haptic_right_default>;
+		pinctrl-names = "default";
+		label = "right";
+	};
+};
