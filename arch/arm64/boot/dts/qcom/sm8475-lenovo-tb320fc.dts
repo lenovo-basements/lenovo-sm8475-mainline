@@ -113,6 +113,7 @@
 		vdd-s12-supply = <&vph_pwr>;
 		vdd-l2-l7-supply = <&vreg_bob>;
 		vdd-l3-l5-supply = <&vreg_bob>;
+		vdd-l6-l9-l10-supply = <&vreg_s12b_1p25>;
 		vreg_s10b_1p8: smps10 {
 			regulator-name = "vreg_s10b_1p8";
 			regulator-min-microvolt = <1800000>;
@@ -146,6 +147,24 @@
 			regulator-max-microvolt = <880000>;
 			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
 		};
+		vreg_l6b_1p2: ldo6 {
+			regulator-name = "vreg_l6b_1p2";
+			regulator-min-microvolt = <1200000>;
+			regulator-max-microvolt = <1200000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+		vreg_l7b_2p5: ldo7 {
+			regulator-name = "vreg_l7b_2p5";
+			regulator-min-microvolt = <2504000>;
+			regulator-max-microvolt = <2504000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+		vreg_l9b_1p2: ldo9 {
+			regulator-name = "vreg_l9b_1p2";
+			regulator-min-microvolt = <1200000>;
+			regulator-max-microvolt = <1200000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
 	};
 	regulators-1 {
 		compatible = "qcom,pm8350c-rpmh-regulators";
@@ -154,6 +173,7 @@
 		vdd-s1-supply = <&vph_pwr>;
 		vdd-l6-l9-l11-supply = <&vreg_bob>;
 		vdd-l10-supply = <&vreg_s12b_1p25>;
+		vdd-l1-l12-supply = <&vreg_bob>;
 		vreg_s1c_wifi: smps1 {
 			regulator-name = "vreg_s1c_wifi";
 			regulator-min-microvolt = <1900000>;
@@ -170,6 +190,13 @@
 			regulator-min-microvolt = <1200000>;
 			regulator-max-microvolt = <1200000>;
 			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+		vreg_l12c_1p95: ldo12 {
+			regulator-name = "vreg_l12c_1p95";
+			regulator-min-microvolt = <1950000>;
+			regulator-max-microvolt = <1980000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+			regulator-boot-on;
 		};
 		vreg_l6c_2p96: ldo6 {
 			regulator-name = "vreg_l6c_2p96";
@@ -523,4 +550,22 @@
 		bias-pull-down;
 		output-low;
 	};
+};
+
+&ufs_mem_hc {
+	reset-gpios = <&tlmm 210 GPIO_ACTIVE_LOW>;
+	vcc-supply = <&vreg_l7b_2p5>;
+	vcc-max-microamp = <1100000>;
+	vccq-supply = <&vreg_l9b_1p2>;
+	vccq-max-microamp = <1200000>;
+	vdd-hba-supply = <&vreg_l9b_1p2>;
+	status = "okay";
+};
+
+&ufs_mem_phy {
+	compatible = "qcom,sm8475-qmp-ufs-phy";
+	reg = <0 0x01d80000 0 0x2000>;
+	vdda-phy-supply = <&vreg_l5b_0p88>;
+	vdda-pll-supply = <&vreg_l6b_1p2>;
+	status = "okay";
 };
