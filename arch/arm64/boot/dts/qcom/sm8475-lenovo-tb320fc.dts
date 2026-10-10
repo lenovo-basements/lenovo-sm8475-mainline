@@ -340,6 +340,9 @@
 				#size-cells = <0>;
 				port@0 {
 					reg = <0>;
+					usb_primary_hs: endpoint {
+						remote-endpoint = <&usb_1_dwc3_hs>;
+					};
 				};
 				port@1 {
 					reg = <1>;
@@ -361,13 +364,6 @@
 			reg = <1>;
 			power-role = "dual";
 			data-role = "dual";
-
-			/* Initial host policy follows the keyboard/hub connector only. */
-			port {
-				usb_keyboard_hs: endpoint {
-					remote-endpoint = <&usb_1_dwc3_hs>;
-				};
-			};
 		};
 	};
 
@@ -390,7 +386,7 @@
 };
 
 &usb_1_dwc3_hs {
-	remote-endpoint = <&usb_keyboard_hs>;
+	remote-endpoint = <&usb_primary_hs>;
 };
 
 &usb_1_qmpphy {
