@@ -265,8 +265,10 @@
 };
 
 &qupv3_id_0 { status = "okay"; };
+&qupv3_id_1 { status = "okay"; };
 &qupv3_id_2 { status = "okay"; };
 &gpi_dma0 { status = "okay"; };
+&gpi_dma1 { status = "okay"; };
 &uart7 { status = "okay"; };
 &i2c5 {
 	status = "okay";
@@ -459,6 +461,63 @@
 		drive-strength = <2>;
 		bias-pull-up;
 		input-enable;
+	};
+
+	cs35l45_irq_default: cs35l45-irq-default-state {
+		pins = "gpio172";
+		function = "gpio";
+		bias-pull-up;
+		input-enable;
+		drive-strength = <2>;
+	};
+
+	cs35l45_irq_default_1: cs35l45-irq-default-1-state {
+		pins = "gpio1";
+		function = "gpio";
+		bias-pull-up;
+		input-enable;
+		drive-strength = <2>;
+	};
+
+	cs35l45_reset_active: cs35l45-reset-active-state {
+		pins = "gpio123";
+		function = "gpio";
+		drive-strength = <16>;
+		output-high;
+	};
+
+	pri_mi2s_active: pri-mi2s-active-state {
+		sck-pins {
+			pins = "gpio126";
+			function = "mi2s0_sck";
+			drive-strength = <8>;
+			bias-disable;
+			output-high;
+		};
+
+		ws-pins {
+			pins = "gpio129";
+			function = "mi2s0_ws";
+			drive-strength = <8>;
+			bias-disable;
+			output-high;
+		};
+
+		data0-pins {
+			pins = "gpio127";
+			function = "mi2s0_data0";
+			drive-strength = <8>;
+			bias-disable;
+			output-high;
+		};
+
+		data1-pins {
+			pins = "gpio128";
+			function = "mi2s0_data1";
+			drive-strength = <8>;
+			bias-disable;
+			output-high;
+		};
 	};
 };
 
@@ -701,5 +760,85 @@
 &pon_resin {
 	linux,code = <KEY_VOLUMEDOWN>;
 	status = "okay";
+};
+
+&i2c13 {
+	clock-frequency = <1000000>;
+	status = "okay";
+
+	cs35l45_1: amplifier@30 {
+		compatible = "cirrus,cs35l45";
+		reg = <0x30>;
+		interrupt-parent = <&tlmm>;
+		interrupts = <172 IRQ_TYPE_LEVEL_LOW>;
+		vdd-a-supply = <&vreg_s10b_1p8>;
+		vdd-batt-supply = <&vreg_bob>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&cs35l45_irq_default &cs35l45_reset_active>;
+		cirrus,asp-sdout-hiz-ctrl = <3>;
+		#sound-dai-cells = <1>;
+		sound-name-prefix = "SPK1";
+	};
+
+	cs35l45_2: amplifier@31 {
+		compatible = "cirrus,cs35l45";
+		reg = <0x31>;
+		interrupt-parent = <&tlmm>;
+		interrupts = <1 IRQ_TYPE_LEVEL_LOW>;
+		vdd-a-supply = <&vreg_s10b_1p8>;
+		vdd-batt-supply = <&vreg_bob>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&cs35l45_irq_default_1 &cs35l45_reset_active>;
+		cirrus,asp-sdout-hiz-ctrl = <3>;
+		#sound-dai-cells = <1>;
+		sound-name-prefix = "SPK2";
+	};
+};
+
+&vamacro {
+	pinctrl-0 = <&dmic01_default>, <&dmic23_default>;
+	pinctrl-names = "default";
+	vdd-micb-supply = <&vreg_s10b_1p8>;
+	qcom,dmic-sample-rate = <600000>;
+	status = "okay";
+};
+
+&sound {
+	compatible = "qcom,sm8450-sndcard";
+	model = "Lenovo-TB320FC";
+	pinctrl-0 = <&pri_mi2s_active>;
+	pinctrl-names = "default";
+
+	mi2s-playback-dai-link {
+		link-name = "Primary MI2S Playback";
+
+		cpu {
+			sound-dai = <&q6apmbedai PRIMARY_MI2S_RX>;
+		};
+
+		codec {
+			sound-dai = <&cs35l45_1 0>, <&cs35l45_2 0>;
+		};
+
+		platform {
+			sound-dai = <&q6apm>;
+		};
+	};
+
+	va-dai-link {
+		link-name = "VA Capture";
+
+		cpu {
+			sound-dai = <&q6apmbedai TX_CODEC_DMA_TX_3>;
+		};
+
+		codec {
+			sound-dai = <&vamacro 0>;
+		};
+
+		platform {
+			sound-dai = <&q6apm>;
+		};
+	};
 };
 
