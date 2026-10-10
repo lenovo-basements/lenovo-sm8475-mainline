@@ -817,6 +817,8 @@ bool msm_dsi_host_is_wide_bus_enabled(struct mipi_dsi_host *host)
 					MSM_DSI_6G_VER_MINOR_V2_5_0);
 }
 
+static void dsi_program_lane_map(struct msm_dsi_host *msm_host);
+
 static void dsi_ctrl_enable(struct msm_dsi_host *msm_host,
 			struct msm_dsi_phy_shared_timings *phy_shared_timings, struct msm_dsi_phy *phy)
 {
@@ -917,8 +919,7 @@ static void dsi_ctrl_enable(struct msm_dsi_host *msm_host,
 	DBG("lane number=%d", msm_host->lanes);
 	data |= ((DSI_CTRL_LANE0 << msm_host->lanes) - DSI_CTRL_LANE0);
 
-	dsi_write(msm_host, REG_DSI_LANE_SWAP_CTRL,
-		  DSI_LANE_SWAP_CTRL_DLN_SWAP_SEL(msm_host->dlane_swap));
+	dsi_program_lane_map(msm_host);
 
 	if (!(flags & MIPI_DSI_CLOCK_NON_CONTINUOUS)) {
 		lane_ctrl = dsi_read(msm_host, REG_DSI_LANE_CTRL);
@@ -938,7 +939,19 @@ static void dsi_ctrl_enable(struct msm_dsi_host *msm_host,
 		dsi_write(msm_host, REG_DSI_CPHY_MODE_CTRL, BIT(0));
 }
 
-static void dsi_update_dsc_timing(struct msm_dsi_host *msm_host, bool is_cmd_mode)
+static u32 dsi_dsc_slices_per_intf(struct msm_dsi_host *msm_host,
+				 bool is_bonded_dsi)
+{
+	u32 width = msm_host->mode->hdisplay;
+
+	if (is_bonded_dsi)
+		width /= 2;
+
+	return DIV_ROUND_UP(width, msm_host->dsc->slice_width);
+}
+
+static void dsi_update_dsc_timing(struct msm_dsi_host *msm_host, bool is_cmd_mode,
+				bool is_bonded_dsi)
 {
 	struct drm_dsc_config *dsc = msm_host->dsc;
 	u32 reg, reg_ctrl, reg_ctrl2;
@@ -950,7 +963,10 @@ static void dsi_update_dsc_timing(struct msm_dsi_host *msm_host, bool is_cmd_mod
 	/* first calculate dsc parameters and then program
 	 * compress mode registers
 	 */
-	slice_per_intf = dsc->slice_count;
+	slice_per_intf = dsi_dsc_slices_per_intf(msm_host, is_bonded_dsi);
+	msm_host->dsc_slice_per_pkt =
+		(msm_host->mode_flags & MIPI_DSI_MODE_DSC_ALL_SLICES_IN_PKT) ?
+		slice_per_intf : 1;
 
 	total_bytes_per_intf = dsc->slice_chunk_size * slice_per_intf;
 	bytes_per_pkt = dsc->slice_chunk_size * msm_host->dsc_slice_per_pkt;
@@ -993,7 +1009,7 @@ static void dsi_update_dsc_timing(struct msm_dsi_host *msm_host, bool is_cmd_mod
 	}
 }
 
-static void dsi_timing_setup(struct msm_dsi_host *msm_host, bool is_bonded_dsi)
+static int dsi_timing_setup(struct msm_dsi_host *msm_host, bool is_bonded_dsi)
 {
 	struct drm_display_mode *mode = msm_host->mode;
 	u32 hs_start = 0, vs_start = 0; /* take sync start as 0 */
@@ -1011,6 +1027,9 @@ static void dsi_timing_setup(struct msm_dsi_host *msm_host, bool is_bonded_dsi)
 	bool wide_bus_enabled = msm_dsi_host_is_wide_bus_enabled(&msm_host->base);
 
 	DBG("");
+
+	if (msm_dsi_host_check_dsc(&msm_host->base, mode, is_bonded_dsi) != MODE_OK)
+		return -EINVAL;
 
 	/*
 	 * For bonded DSI mode, the current DRM mode has
@@ -1035,7 +1054,7 @@ static void dsi_timing_setup(struct msm_dsi_host *msm_host, bool is_bonded_dsi)
 		if (!dsc || !mode->hdisplay || !mode->vdisplay) {
 			pr_err("DSI: invalid input: pic_width: %d pic_height: %d\n",
 			       mode->hdisplay, mode->vdisplay);
-			return;
+			return -EINVAL;
 		}
 
 		dsc->pic_width = mode->hdisplay;
@@ -1047,7 +1066,7 @@ static void dsi_timing_setup(struct msm_dsi_host *msm_host, bool is_bonded_dsi)
 		 */
 		ret = dsi_populate_dsc_params(msm_host, dsc);
 		if (ret)
-			return;
+			return ret;
 
 		/*
 		 * DPU sends 3 bytes per pclk cycle to DSI. If widebus is
@@ -1075,7 +1094,8 @@ static void dsi_timing_setup(struct msm_dsi_host *msm_host, bool is_bonded_dsi)
 			bits_per_pclk = 24;
 		}
 
-		hdisplay = DIV_ROUND_UP(msm_dsc_get_bytes_per_line(msm_host->dsc) * 8, bits_per_pclk);
+		hdisplay = DIV_ROUND_UP(msm_dsc_get_bytes_per_intf(dsc, hdisplay) * 8,
+				       bits_per_pclk);
 
 		h_total += hdisplay;
 		ha_end = ha_start + hdisplay;
@@ -1083,7 +1103,7 @@ static void dsi_timing_setup(struct msm_dsi_host *msm_host, bool is_bonded_dsi)
 
 	if (msm_host->mode_flags & MIPI_DSI_MODE_VIDEO) {
 		if (msm_host->dsc)
-			dsi_update_dsc_timing(msm_host, false);
+			dsi_update_dsc_timing(msm_host, false, is_bonded_dsi);
 
 		dsi_write(msm_host, REG_DSI_ACTIVE_H,
 			DSI_ACTIVE_H_START(ha_start) |
@@ -1104,7 +1124,7 @@ static void dsi_timing_setup(struct msm_dsi_host *msm_host, bool is_bonded_dsi)
 			DSI_ACTIVE_VSYNC_VPOS_END(vs_end));
 	} else {		/* command mode */
 		if (msm_host->dsc)
-			dsi_update_dsc_timing(msm_host, true);
+			dsi_update_dsc_timing(msm_host, true, is_bonded_dsi);
 
 		/* image data and 1 byte write_memory_start cmd */
 		if (!msm_host->dsc)
@@ -1126,6 +1146,8 @@ static void dsi_timing_setup(struct msm_dsi_host *msm_host, bool is_bonded_dsi)
 			DSI_CMD_MDP_STREAM0_TOTAL_H_TOTAL(hdisplay) |
 			DSI_CMD_MDP_STREAM0_TOTAL_V_TOTAL(mode->vdisplay));
 	}
+
+	return 0;
 }
 
 static void dsi_sw_reset(struct msm_dsi_host *msm_host)
@@ -1439,7 +1461,8 @@ int dsi_dma_base_get_v2(struct msm_dsi_host *msm_host, uint64_t *dma_base)
 	return 0;
 }
 
-static int dsi_cmd_dma_tx(struct msm_dsi_host *msm_host, int len)
+static int dsi_cmd_dma_tx(struct msm_dsi_host *msm_host, int len,
+			  bool need_sync)
 {
 	const struct msm_dsi_cfg_handler *cfg_hnd = msm_host->cfg_hnd;
 	int ret;
@@ -1457,7 +1480,8 @@ static int dsi_cmd_dma_tx(struct msm_dsi_host *msm_host, int len)
 	dsi_wait4video_eng_busy(msm_host);
 
 	triggered = msm_dsi_manager_cmd_xfer_trigger(
-						msm_host->id, dma_base, len);
+						msm_host->id, dma_base, len,
+						need_sync);
 	if (triggered) {
 		ret = wait_for_completion_timeout(&msm_host->dma_comp,
 					msecs_to_jiffies(200));
@@ -1523,7 +1547,8 @@ static int dsi_cmd_dma_rx(struct msm_dsi_host *msm_host,
 }
 
 static int dsi_cmds2buf_tx(struct msm_dsi_host *msm_host,
-				const struct mipi_dsi_msg *msg)
+				const struct mipi_dsi_msg *msg,
+				bool need_sync)
 {
 	int len, ret;
 	int bllp_len = msm_host->mode->hdisplay *
@@ -1552,7 +1577,7 @@ static int dsi_cmds2buf_tx(struct msm_dsi_host *msm_host,
 		return -EINVAL;
 	}
 
-	ret = dsi_cmd_dma_tx(msm_host, len);
+	ret = dsi_cmd_dma_tx(msm_host, len, need_sync);
 	if (ret < 0) {
 		pr_err("%s: cmd dma tx failed, type=0x%x, data0=0x%x, len=%d, ret=%d\n",
 			__func__, msg->type, (*(u8 *)(msg->tx_buf)), len, ret);
@@ -1809,6 +1834,25 @@ static const int supported_data_lane_swaps[][4] = {
 	{ 2, 1, 0, 3 },
 	{ 3, 2, 1, 0 },
 };
+
+static void dsi_program_lane_map(struct msm_dsi_host *msm_host)
+{
+	const struct msm_dsi_cfg_handler *cfg = msm_host->cfg_hnd;
+	const int *physical_to_logical =
+		supported_data_lane_swaps[msm_host->dlane_swap];
+	u32 value = 0;
+	unsigned int physical;
+
+	if (msm_host->cphy_mode && cfg->major == MSM_DSI_VER_MAJOR_6G &&
+	    cfg->minor >= MSM_DSI_6G_VER_MINOR_V2_2_1) {
+		for (physical = 0; physical < 4; physical++)
+			value |= BIT(physical) << (4 * physical_to_logical[physical]);
+	} else {
+		value = DSI_LANE_SWAP_CTRL_DLN_SWAP_SEL(msm_host->dlane_swap);
+	}
+
+	dsi_write(msm_host, REG_DSI_LANE_SWAP_CTRL, value);
+}
 
 static int dsi_host_parse_lane_data(struct msm_dsi_host *msm_host,
 				    struct device_node *ep)
@@ -2216,15 +2260,17 @@ void msm_dsi_host_xfer_restore(struct mipi_dsi_host *host,
 }
 
 int msm_dsi_host_cmd_tx(struct mipi_dsi_host *host,
-				const struct mipi_dsi_msg *msg)
+				const struct mipi_dsi_msg *msg,
+				bool need_sync)
 {
 	struct msm_dsi_host *msm_host = to_msm_dsi_host(host);
 
-	return dsi_cmds2buf_tx(msm_host, msg);
+	return dsi_cmds2buf_tx(msm_host, msg, need_sync);
 }
 
 int msm_dsi_host_cmd_rx(struct mipi_dsi_host *host,
-				const struct mipi_dsi_msg *msg)
+				const struct mipi_dsi_msg *msg,
+				bool need_sync)
 {
 	struct msm_dsi_host *msm_host = to_msm_dsi_host(host);
 	const struct msm_dsi_cfg_handler *cfg_hnd = msm_host->cfg_hnd;
@@ -2262,7 +2308,8 @@ int msm_dsi_host_cmd_rx(struct mipi_dsi_host *host,
 		DBG("rlen=%d pkt_size=%d rx_byte=%d",
 			rlen, pkt_size, rx_byte);
 
-		ret = dsi_cmds2buf_tx(msm_host, &max_pkt_size_msg);
+		/* The return-size command follows the read's unicast routing. */
+		ret = dsi_cmds2buf_tx(msm_host, &max_pkt_size_msg, need_sync);
 		if (ret < 2) {
 			pr_err("%s: Set max pkt size failed, %d\n",
 				__func__, ret);
@@ -2279,7 +2326,7 @@ int msm_dsi_host_cmd_rx(struct mipi_dsi_host *host,
 			wmb(); /* release cleared status before transfer */
 		}
 
-		ret = dsi_cmds2buf_tx(msm_host, msg);
+		ret = dsi_cmds2buf_tx(msm_host, msg, need_sync);
 		if (ret < 0) {
 			pr_err("%s: Read cmd Tx failed, %d\n", __func__, ret);
 			return ret;
@@ -2528,7 +2575,11 @@ int msm_dsi_host_power_on(struct mipi_dsi_host *host,
 		goto fail_disable_clk;
 	}
 
-	dsi_timing_setup(msm_host, is_bonded_dsi);
+	msm_dsi_phy_post_link_enable(phy);
+
+	ret = dsi_timing_setup(msm_host, is_bonded_dsi);
+	if (ret)
+		goto fail_disable_clk;
 	dsi_sw_reset(msm_host);
 	dsi_ctrl_enable(msm_host, phy_shared_timings, phy);
 
@@ -2600,7 +2651,8 @@ int msm_dsi_host_set_display_mode(struct mipi_dsi_host *host,
 }
 
 enum drm_mode_status msm_dsi_host_check_dsc(struct mipi_dsi_host *host,
-					    const struct drm_display_mode *mode)
+					    const struct drm_display_mode *mode,
+					    bool is_bonded_dsi)
 {
 	struct msm_dsi_host *msm_host = to_msm_dsi_host(host);
 	struct drm_dsc_config *dsc = msm_host->dsc;
@@ -2610,11 +2662,23 @@ enum drm_mode_status msm_dsi_host_check_dsc(struct mipi_dsi_host *host,
 	if (!msm_host->dsc)
 		return MODE_OK;
 
+	if (!dsc->slice_width || !dsc->slice_height || !dsc->slice_count ||
+	    !dsc->bits_per_component)
+		return MODE_BAD;
+
 	if (pic_width % dsc->slice_width) {
 		pr_err("DSI: pic_width %d has to be multiple of slice %d\n",
 		       pic_width, dsc->slice_width);
 		return MODE_H_ILLEGAL;
 	}
+
+	if (is_bonded_dsi &&
+	    (pic_width % 2 || (pic_width / 2) % dsc->slice_width ||
+	     mode->hsync_start % 2 || mode->hsync_end % 2 || mode->htotal % 2))
+		return MODE_H_ILLEGAL;
+
+	if (dsc->slice_count != pic_width / dsc->slice_width)
+		return MODE_BAD;
 
 	if (pic_height % dsc->slice_height) {
 		pr_err("DSI: pic_height %d has to be multiple of slice %d\n",

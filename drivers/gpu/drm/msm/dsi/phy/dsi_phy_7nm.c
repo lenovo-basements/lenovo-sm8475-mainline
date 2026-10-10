@@ -398,6 +398,17 @@ static int dsi_pll_7nm_lock_status(struct dsi_pll_7nm *pll)
 	return rc;
 }
 
+static void dsi_7nm_phy_slave_bias(struct msm_dsi_phy *phy, bool enable)
+{
+	if (!phy->cphy_mode ||
+	    !(phy->cfg->quirks & DSI_PHY_7NM_QUIRK_V4_3_2) ||
+	    phy->usecase != MSM_DSI_PHY_SLAVE)
+		return;
+
+	writel(enable ? 0xc0 : 0,
+	       phy->pll_base + REG_DSI_7nm_PHY_PLL_SYSTEM_MUXES);
+}
+
 static void dsi_pll_disable_pll_bias(struct dsi_pll_7nm *pll)
 {
 	unsigned long flags;
@@ -494,6 +505,32 @@ static void dsi_pll_phy_dig_reset(struct dsi_pll_7nm *pll)
 	wmb(); /* Ensure that the reset is deasserted */
 }
 
+static void dsi_pll_7nm_sync_slave_cphy_div(struct dsi_pll_7nm *pll)
+{
+	struct dsi_pll_7nm *slave = pll->slave;
+	u32 master_cfg, slave_cfg;
+	unsigned long flags;
+
+	if (!(pll->phy->cfg->quirks & DSI_PHY_7NM_QUIRK_V4_3_2) ||
+	    !pll->phy->cphy_mode || !slave || !slave->phy->cphy_mode)
+		return;
+
+	spin_lock_irqsave(&slave->postdiv_lock, flags);
+	master_cfg = readl(pll->phy->pll_base + REG_DSI_7nm_PHY_PLL_PLL_OUTDIV_RATE);
+	slave_cfg = readl(slave->phy->pll_base + REG_DSI_7nm_PHY_PLL_PLL_OUTDIV_RATE);
+	slave_cfg = (slave_cfg & ~0x3) | (master_cfg & 0x3);
+	writel(slave_cfg, slave->phy->pll_base + REG_DSI_7nm_PHY_PLL_PLL_OUTDIV_RATE);
+
+	master_cfg = readl(pll->phy->base + REG_DSI_7nm_PHY_CMN_CLK_CFG0);
+	slave_cfg = readl(slave->phy->base + REG_DSI_7nm_PHY_CMN_CLK_CFG0);
+	slave_cfg &= ~(DSI_7nm_PHY_CMN_CLK_CFG0_DIV_CTRL_7_4__MASK |
+		       DSI_7nm_PHY_CMN_CLK_CFG0_DIV_CTRL_3_0__MASK);
+	slave_cfg |= (master_cfg & DSI_7nm_PHY_CMN_CLK_CFG0_DIV_CTRL_7_4__MASK) |
+		     DSI_7nm_PHY_CMN_CLK_CFG0_DIV_CTRL_3_0(1);
+	writel(slave_cfg, slave->phy->base + REG_DSI_7nm_PHY_CMN_CLK_CFG0);
+	spin_unlock_irqrestore(&slave->postdiv_lock, flags);
+}
+
 static int dsi_pll_7nm_vco_prepare(struct clk_hw *hw)
 {
 	struct dsi_pll_7nm *pll_7nm = to_pll_7nm(hw);
@@ -530,6 +567,8 @@ static int dsi_pll_7nm_vco_prepare(struct clk_hw *hw)
 	if (pll_7nm->slave)
 		dsi_pll_phy_dig_reset(pll_7nm->slave);
 
+	dsi_pll_7nm_sync_slave_cphy_div(pll_7nm);
+
 	dsi_pll_enable_global_clk(pll_7nm);
 	if (pll_7nm->slave)
 		dsi_pll_enable_global_clk(pll_7nm->slave);
@@ -546,6 +585,18 @@ static void dsi_pll_disable_sub(struct dsi_pll_7nm *pll)
 {
 	writel(0, pll->phy->base + REG_DSI_7nm_PHY_CMN_RBUF_CTRL);
 	dsi_pll_disable_pll_bias(pll);
+}
+
+static void dsi_7nm_phy_post_link_enable(struct msm_dsi_phy *phy)
+{
+	if (!phy->cphy_mode ||
+	    !(phy->cfg->quirks & DSI_PHY_7NM_QUIRK_V4_3_2))
+		return;
+
+	writel(0, phy->base + REG_DSI_7nm_PHY_CMN_RBUF_CTRL);
+	wmb();
+	writel(1, phy->base + REG_DSI_7nm_PHY_CMN_RBUF_CTRL);
+	wmb();
 }
 
 static void dsi_pll_7nm_vco_unprepare(struct clk_hw *hw)
@@ -696,6 +747,7 @@ static int dsi_7nm_set_usecase(struct msm_dsi_phy *phy)
 	struct dsi_pll_7nm *pll_7nm = to_pll_7nm(phy->vco_hw);
 	void __iomem *base = phy->base;
 	u32 data = 0x0;	/* internal PLL */
+	u32 mask = DSI_7nm_PHY_CMN_CLK_CFG1_BITCLK_SEL__MASK;
 
 	DBG("DSI PLL%d", pll_7nm->phy->id);
 
@@ -715,9 +767,12 @@ static int dsi_7nm_set_usecase(struct msm_dsi_phy *phy)
 		return -EINVAL;
 	}
 
-	/* set PLL src */
-	dsi_pll_cmn_clk_cfg1_update(pll_7nm, DSI_7nm_PHY_CMN_CLK_CFG1_BITCLK_SEL__MASK,
-				    DSI_7nm_PHY_CMN_CLK_CFG1_BITCLK_SEL(data));
+	data = DSI_7nm_PHY_CMN_CLK_CFG1_BITCLK_SEL(data);
+	if (phy->cphy_mode && (phy->cfg->quirks & DSI_PHY_7NM_QUIRK_V4_3_2)) {
+		mask |= DSI_7nm_PHY_CMN_CLK_CFG1_DSICLK_SEL__MASK;
+		data |= DSI_7nm_PHY_CMN_CLK_CFG1_DSICLK_SEL(3);
+	}
+	dsi_pll_cmn_clk_cfg1_update(pll_7nm, mask, data);
 
 	return 0;
 }
@@ -1093,17 +1148,18 @@ static int dsi_7nm_phy_enable(struct msm_dsi_phy *phy,
 		glbl_rescode_bot_ctrl = 0x3c;
 	}
 
-	spin_lock_irqsave(&pll->pll_enable_lock, flags);
-	pll->pll_enable_cnt = 1;
 	if (phy->cfg->quirks & DSI_PHY_7NM_QUIRK_V4_3_2) {
 		vreg_ctrl_0 = phy->cphy_mode ? 0x45 : 0x44;
 		vreg_ctrl_1 = phy->cphy_mode ? 0x41 : 0x19;
 	}
 
+	spin_lock_irqsave(&pll->pll_enable_lock, flags);
+	pll->pll_enable_cnt = 1;
 	/* de-assert digital and pll power down */
 	data = DSI_7nm_PHY_CMN_CTRL_0_DIGTOP_PWRDN_B |
 	       DSI_7nm_PHY_CMN_CTRL_0_PLL_SHUTDOWNB;
 	writel(data, base + REG_DSI_7nm_PHY_CMN_CTRL_0);
+	dsi_7nm_phy_slave_bias(phy, true);
 	spin_unlock_irqrestore(&pll->pll_enable_lock, flags);
 
 	/* Assert PLL core reset */
@@ -1248,6 +1304,7 @@ static void dsi_7nm_phy_disable(struct msm_dsi_phy *phy)
 
 	spin_lock_irqsave(&pll->pll_enable_lock, flags);
 	pll->pll_enable_cnt = 0;
+	dsi_7nm_phy_slave_bias(phy, false);
 	/* Turn off all PHY blocks */
 	writel(0x00, base + REG_DSI_7nm_PHY_CMN_CTRL_0);
 	spin_unlock_irqrestore(&pll->pll_enable_lock, flags);
@@ -1419,6 +1476,7 @@ const struct msm_dsi_phy_cfg dsi_phy_4nm_8475_cfgs = {
 	.ops = {
 		.enable = dsi_7nm_phy_enable,
 		.disable = dsi_7nm_phy_disable,
+		.post_link_enable = dsi_7nm_phy_post_link_enable,
 		.pll_init = dsi_pll_7nm_init,
 		.save_pll_state = dsi_7nm_pll_save_state,
 		.restore_pll_state = dsi_7nm_pll_restore_state,

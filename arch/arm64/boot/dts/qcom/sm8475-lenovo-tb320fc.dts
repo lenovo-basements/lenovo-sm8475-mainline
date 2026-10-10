@@ -45,15 +45,6 @@
 	};
 	chosen {
 		stdout-path = "serial0:115200n8";
-		framebuffer@b8000000 {
-			compatible = "simple-framebuffer";
-			memory-region = <&splash_region>;
-			width = <1600>;
-			height = <2560>;
-			stride = <6400>;
-			format = "x8r8g8b8";
-			status = "okay";
-		};
 	};
 
 	wifi-pmu {
@@ -124,6 +115,29 @@
 		regulator-min-microvolt = <3700000>;
 		regulator-max-microvolt = <3700000>;
 		regulator-always-on;
+	};
+
+	panel_vddpos: regulator-panel-vddpos {
+		compatible = "regulator-fixed";
+		regulator-name = "panel_vddpos";
+		regulator-min-microvolt = <5500000>;
+		regulator-max-microvolt = <5500000>;
+		gpio = <&tlmm 61 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+		regulator-boot-on;
+		startup-delay-us = <10000>;
+	};
+
+	panel_vddneg: regulator-panel-vddneg {
+		compatible = "regulator-fixed";
+		regulator-name = "panel_vddneg";
+		regulator-min-microvolt = <5500000>;
+		regulator-max-microvolt = <5500000>;
+		vin-supply = <&panel_vddpos>;
+		gpio = <&tlmm 65 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+		regulator-boot-on;
+		startup-delay-us = <10000>;
 	};
 
 	reserved-memory {
@@ -270,6 +284,142 @@
 &gpi_dma0 { status = "okay"; };
 &gpi_dma1 { status = "okay"; };
 &uart7 { status = "okay"; };
+
+&i2c2 {
+	clock-frequency = <100000>;
+	status = "okay";
+
+	panel_backlight: backlight@11 {
+		compatible = "lenovo,tb320fc-ktz8866", "kinetic,ktz8866";
+		reg = <0x11>;
+		vddpos-supply = <&panel_vddpos>;
+		vddneg-supply = <&panel_vddneg>;
+		enable-gpios = <&tlmm 62 GPIO_ACTIVE_HIGH>;
+		current-num-sinks = <4>;
+		default-brightness = <1027>;
+		kinetic,current-ramp-delay-ms = <256>;
+		kinetic,enable-lcd-bias;
+	};
+};
+
+&mdss {
+	status = "okay";
+};
+
+&mdss_dsi0 {
+	vdda-supply = <&vreg_l10c_1p2>;
+	qcom,dual-dsi-mode;
+	qcom,sync-dual-dsi;
+	qcom,master-dsi;
+	status = "okay";
+
+	display_panel: panel@0 {
+		compatible = "lenovo,tb320fc-nt36523n";
+		reg = <0>;
+		vddio-supply = <&vreg_l12c_1p95>;
+		vddpos-supply = <&panel_vddpos>;
+		vddneg-supply = <&panel_vddneg>;
+		reset-gpios = <&tlmm 0 GPIO_ACTIVE_LOW>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&panel_reset_default>;
+		backlight = <&panel_backlight>;
+
+		ports {
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			port@0 {
+				reg = <0>;
+
+				panel_in_0: endpoint {
+					remote-endpoint = <&mdss_dsi0_out>;
+				};
+			};
+
+			port@1 {
+				reg = <1>;
+
+				panel_in_1: endpoint {
+					remote-endpoint = <&mdss_dsi1_out>;
+				};
+			};
+		};
+	};
+};
+
+&mdss_dsi0_out {
+	data-lanes = <0 1 2>;
+	remote-endpoint = <&panel_in_0>;
+};
+
+&mdss_dsi0_phy {
+	compatible = "qcom,sm8475-dsi-phy-4nm";
+	vdds-supply = <&vreg_l5b_0p88>;
+	phy-type = <PHY_TYPE_CPHY>;
+	status = "okay";
+};
+
+&mdss_dsi1 {
+	vdda-supply = <&vreg_l10c_1p2>;
+	qcom,dual-dsi-mode;
+	qcom,sync-dual-dsi;
+	assigned-clock-parents = <&mdss_dsi0_phy DSI_BYTE_PLL_CLK>,
+				 <&mdss_dsi0_phy DSI_PIXEL_PLL_CLK>;
+	status = "okay";
+};
+
+&mdss_dsi1_out {
+	data-lanes = <0 1 2>;
+	remote-endpoint = <&panel_in_1>;
+};
+
+&mdss_dsi1_phy {
+	compatible = "qcom,sm8475-dsi-phy-4nm";
+	vdds-supply = <&vreg_l5b_0p88>;
+	phy-type = <PHY_TYPE_CPHY>;
+	status = "okay";
+};
+
+&qup_spi4_data_clk {
+	drive-strength = <6>;
+	bias-disable;
+};
+
+&spi4 {
+	status = "okay";
+
+	touchscreen@0 {
+		compatible = "novatek,nt36523n";
+		reg = <0>;
+		spi-max-frequency = <9600000>;
+		interrupts-extended = <&tlmm 21 IRQ_TYPE_EDGE_RISING>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&touch_irq_default>;
+		panel = <&display_panel>;
+		firmware-name = "novatek/novatek_ts_fw.bin";
+		touchscreen-size-x = <1600>;
+		touchscreen-size-y = <2560>;
+		novatek,pen-support;
+	};
+};
+
+&tlmm {
+	panel_reset_default: panel-reset-default-state {
+		pins = "gpio0";
+		function = "gpio";
+		drive-strength = <8>;
+		bias-disable;
+	};
+
+	touch_irq_default: touch-irq-default-state {
+		pins = "gpio21";
+		function = "gpio";
+		drive-strength = <8>;
+		bias-pull-up;
+		input-enable;
+	};
+};
+
 &i2c5 {
 	status = "okay";
 	repeater: redriver@4f {
