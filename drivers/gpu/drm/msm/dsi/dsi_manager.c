@@ -414,6 +414,11 @@ static enum drm_mode_status dsi_mgr_bridge_mode_valid(struct drm_bridge *bridge,
 	struct platform_device *pdev = msm_dsi->pdev;
 	struct dev_pm_opp *opp;
 	unsigned long byte_clk_rate;
+	enum drm_mode_status status;
+
+	status = msm_dsi_host_check_dsc(host, mode, IS_BONDED_DSI());
+	if (status != MODE_OK)
+		return status;
 
 	byte_clk_rate = dsi_byte_clk_get_rate(host, IS_BONDED_DSI(), mode);
 
@@ -432,7 +437,7 @@ static enum drm_mode_status dsi_mgr_bridge_mode_valid(struct drm_bridge *bridge,
 			return MODE_ERROR;
 	}
 
-	return msm_dsi_host_check_dsc(host, mode);
+	return MODE_OK;
 }
 
 static int dsi_mgr_bridge_attach(struct drm_bridge *bridge,
@@ -527,8 +532,8 @@ int msm_dsi_manager_cmd_xfer(int id, const struct mipi_dsi_msg *msg)
 		goto restore_host0;
 	}
 
-	ret = is_read ? msm_dsi_host_cmd_rx(host, msg) :
-			msm_dsi_host_cmd_tx(host, msg);
+	ret = is_read ? msm_dsi_host_cmd_rx(host, msg, need_sync) :
+			msm_dsi_host_cmd_tx(host, msg, need_sync);
 
 	msm_dsi_host_xfer_restore(host, msg);
 
@@ -539,16 +544,18 @@ restore_host0:
 	return ret;
 }
 
-bool msm_dsi_manager_cmd_xfer_trigger(int id, u32 dma_base, u32 len)
+bool msm_dsi_manager_cmd_xfer_trigger(int id, u32 dma_base, u32 len,
+				    bool need_sync)
 {
 	struct msm_dsi *msm_dsi = dsi_mgr_get_dsi(id);
 	struct msm_dsi *msm_dsi0 = dsi_mgr_get_dsi(DSI_0);
 	struct mipi_dsi_host *host = msm_dsi->host;
 
-	if (IS_SYNC_NEEDED() && (id == DSI_0))
+	/* Reads, including their return-size command, must stay on one link. */
+	if (need_sync && (id == DSI_0))
 		return false;
 
-	if (IS_SYNC_NEEDED() && msm_dsi0)
+	if (need_sync && msm_dsi0)
 		msm_dsi_host_cmd_xfer_commit(msm_dsi0->host, dma_base, len);
 
 	msm_dsi_host_cmd_xfer_commit(host, dma_base, len);

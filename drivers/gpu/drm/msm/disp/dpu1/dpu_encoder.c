@@ -2038,6 +2038,10 @@ static void dpu_encoder_prep_dsc(struct dpu_encoder_virt *dpu_enc,
 		num_dsc++;
 	}
 
+	if (WARN_ON_ONCE(!num_dsc || dsc->slice_count < num_dsc ||
+			 dsc->slice_count % num_dsc))
+		return;
+
 	pic_width = dsc->pic_width;
 
 	dsc_common_mode = 0;

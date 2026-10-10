@@ -488,6 +488,17 @@ config DRM_PANEL_LEADTEK_LTK500HD1829
 	  24 bit RGB per pixel. It provides a MIPI DSI interface to
 	  the host and has a built-in LED backlight.
 
+config DRM_PANEL_LENOVO_ASPHALT
+	tristate "Lenovo asphalt NT36523N panel"
+	depends on OF && GPIOLIB
+	depends on DRM_MIPI_DSI
+	depends on BACKLIGHT_CLASS_DEVICE
+	select DRM_DISPLAY_HELPER
+	help
+	  Say Y here to enable the Novatek NT36523N panel found in the Lenovo
+	  Legion Y700 (2023) tablet. It has a 1600x2560 resolution and uses
+	  two three-trio C-PHY links with Display Stream Compression.
+
 config DRM_PANEL_LINCOLNTECH_LCD197
 	tristate "Lincoln Technologies lcd197 panel"
 	depends on OF
