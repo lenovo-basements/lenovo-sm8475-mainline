@@ -24,4 +24,20 @@ static inline u32 msm_dsc_get_bytes_per_line(const struct drm_dsc_config *dsc)
 	return dsc->slice_count * dsc->slice_chunk_size;
 }
 
+/**
+ * msm_dsc_get_bytes_per_intf() - calculate compressed bytes on one interface
+ * @dsc: Pointer to the full-picture DSC configuration
+ * @intf_width: Uncompressed pixel width carried by this interface
+ *
+ * Bonded DSI interfaces each carry a subset of the picture's slices. Keep the
+ * full-picture configuration intact for the PPS and the tandem DSC encoders.
+ *
+ * Return: Compressed bytes transmitted per line on this interface.
+ */
+static inline u32 msm_dsc_get_bytes_per_intf(const struct drm_dsc_config *dsc,
+					  u32 intf_width)
+{
+	return DIV_ROUND_UP(intf_width, dsc->slice_width) * dsc->slice_chunk_size;
+}
+
 #endif /* MSM_DSC_HELPER_H_ */
