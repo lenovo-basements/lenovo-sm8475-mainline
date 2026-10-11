@@ -4,6 +4,7 @@
  * Copyright (c) 2022, Linaro Ltd
  * Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
  */
+#include <linux/atomic.h>
 #include <linux/auxiliary_bus.h>
 #include <linux/devm-helpers.h>
 #include <linux/module.h>
@@ -23,8 +24,10 @@
 enum qcom_battmgr_variant {
 	QCOM_BATTMGR_SC8280XP,
 	QCOM_BATTMGR_SM8350,
+	QCOM_BATTMGR_SM8450,
 	QCOM_BATTMGR_SM8550,
 	QCOM_BATTMGR_X1E80100,
+	QCOM_BATTMGR_LENOVO_SM8475,
 };
 
 #define BATTMGR_BAT_STATUS		0x1
@@ -74,6 +77,8 @@ enum qcom_battmgr_variant {
 #define BATT_CHG_CTRL_EN		24
 #define BATT_CHG_CTRL_START_THR		25
 #define BATT_CHG_CTRL_END_THR		26
+
+#define LENOVO_BATT_CHG_ENABLE		27
 
 #define BATTMGR_USB_PROPERTY_GET	0x32
 #define BATTMGR_USB_PROPERTY_SET	0x33
@@ -326,6 +331,11 @@ struct qcom_battmgr {
 
 	bool service_up;
 
+	atomic_t charge_epoch;
+	unsigned int charge_policy_epoch;
+	bool charge_policy_valid;
+	enum power_supply_charge_behaviour charge_policy;
+
 	struct qcom_battmgr_info info;
 	struct qcom_battmgr_status status;
 	struct qcom_battmgr_ac ac;
@@ -374,6 +384,79 @@ static int qcom_battmgr_request_property(struct qcom_battmgr *battmgr, int opcod
 	};
 
 	return qcom_battmgr_request(battmgr, &request, sizeof(request));
+}
+
+static int qcom_battmgr_get_charge_behaviour(struct qcom_battmgr *battmgr,
+					     union power_supply_propval *val)
+{
+	int ret = 0;
+
+	if (battmgr->variant != QCOM_BATTMGR_LENOVO_SM8475)
+		return -EOPNOTSUPP;
+
+	mutex_lock(&battmgr->lock);
+	if (!READ_ONCE(battmgr->service_up))
+		ret = -EAGAIN;
+	else if (!battmgr->charge_policy_valid ||
+		 battmgr->charge_policy_epoch != atomic_read(&battmgr->charge_epoch))
+		ret = -ENODATA;
+	else
+		val->intval = battmgr->charge_policy;
+	mutex_unlock(&battmgr->lock);
+
+	return ret;
+}
+
+static int qcom_battmgr_set_charge_behaviour(struct qcom_battmgr *battmgr, int behaviour)
+{
+	unsigned int epoch;
+	u32 enable;
+	int ret;
+
+	if (battmgr->variant != QCOM_BATTMGR_LENOVO_SM8475)
+		return -EOPNOTSUPP;
+
+	switch (behaviour) {
+	case POWER_SUPPLY_CHARGE_BEHAVIOUR_AUTO:
+		enable = 1;
+		break;
+	case POWER_SUPPLY_CHARGE_BEHAVIOUR_INHIBIT_CHARGE:
+		enable = 0;
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	mutex_lock(&battmgr->lock);
+	if (!READ_ONCE(battmgr->service_up)) {
+		ret = -EAGAIN;
+		goto out_unlock;
+	}
+
+	/* GET returns a constant on this firmware; always send explicit writes. */
+	battmgr->charge_policy_valid = false;
+	epoch = atomic_read(&battmgr->charge_epoch);
+	ret = qcom_battmgr_request_property(battmgr, BATTMGR_BAT_PROPERTY_SET,
+					    LENOVO_BATT_CHG_ENABLE, enable);
+	if (ret) {
+		ret = ret < 0 ? ret : -EIO;
+		goto out_unlock;
+	}
+
+	/* A restart during this request invalidates the acknowledged policy. */
+	if (!READ_ONCE(battmgr->service_up) ||
+	    epoch != atomic_read(&battmgr->charge_epoch)) {
+		ret = -EAGAIN;
+		goto out_unlock;
+	}
+
+	battmgr->charge_policy = behaviour;
+	battmgr->charge_policy_epoch = epoch;
+	battmgr->charge_policy_valid = true;
+
+out_unlock:
+	mutex_unlock(&battmgr->lock);
+	return ret;
 }
 
 static int qcom_battmgr_update_status(struct qcom_battmgr *battmgr)
@@ -458,6 +541,10 @@ static int qcom_battmgr_bat_sm8350_update(struct qcom_battmgr *battmgr,
 	unsigned int prop;
 	int ret;
 
+	if (psp == POWER_SUPPLY_PROP_CHARGE_CONTROL_START_THRESHOLD ||
+	    psp == POWER_SUPPLY_PROP_CHARGE_CONTROL_END_THRESHOLD)
+		return 0;
+
 	if (psp >= ARRAY_SIZE(sm8350_bat_prop_map))
 		return -EINVAL;
 
@@ -519,6 +606,9 @@ static int qcom_battmgr_bat_get_property(struct power_supply *psy,
 
 	if (!battmgr->service_up)
 		return -EAGAIN;
+
+	if (psp == POWER_SUPPLY_PROP_CHARGE_BEHAVIOUR)
+		return qcom_battmgr_get_charge_behaviour(battmgr, val);
 
 	if (battmgr->variant == QCOM_BATTMGR_SC8280XP ||
 	    battmgr->variant == QCOM_BATTMGR_X1E80100)
@@ -704,7 +794,7 @@ static int qcom_battmgr_set_charge_start_threshold(struct qcom_battmgr *battmgr,
 		battmgr->info.charge_ctrl_end = target_soc;
 	}
 
-	return 0;
+	return ret;
 }
 
 static int qcom_battmgr_set_charge_end_threshold(struct qcom_battmgr *battmgr, int end_soc)
@@ -725,7 +815,7 @@ static int qcom_battmgr_set_charge_end_threshold(struct qcom_battmgr *battmgr, i
 		battmgr->info.charge_ctrl_end = end_soc;
 	}
 
-	return 0;
+	return ret;
 }
 
 static int qcom_battmgr_charge_control_thresholds_init(struct qcom_battmgr *battmgr)
@@ -760,7 +850,11 @@ static int qcom_battmgr_charge_control_thresholds_init(struct qcom_battmgr *batt
 static int qcom_battmgr_bat_is_writeable(struct power_supply *psy,
 					 enum power_supply_property psp)
 {
+	struct qcom_battmgr *battmgr = power_supply_get_drvdata(psy);
+
 	switch (psp) {
+	case POWER_SUPPLY_PROP_CHARGE_BEHAVIOUR:
+		return battmgr->variant == QCOM_BATTMGR_LENOVO_SM8475;
 	case POWER_SUPPLY_PROP_CHARGE_CONTROL_START_THRESHOLD:
 	case POWER_SUPPLY_PROP_CHARGE_CONTROL_END_THRESHOLD:
 		return 1;
@@ -776,11 +870,16 @@ static int qcom_battmgr_bat_set_property(struct power_supply *psy,
 					 const union power_supply_propval *pval)
 {
 	struct qcom_battmgr *battmgr = power_supply_get_drvdata(psy);
+	int ret;
 
 	if (!battmgr->service_up)
 		return -EAGAIN;
 
 	switch (psp) {
+	case POWER_SUPPLY_PROP_CHARGE_BEHAVIOUR:
+		ret = qcom_battmgr_set_charge_behaviour(battmgr, pval->intval);
+		power_supply_changed(psy);
+		return ret;
 	case POWER_SUPPLY_PROP_CHARGE_CONTROL_START_THRESHOLD:
 		return qcom_battmgr_set_charge_start_threshold(battmgr, pval->intval);
 	case POWER_SUPPLY_PROP_CHARGE_CONTROL_END_THRESHOLD:
@@ -893,6 +992,43 @@ static const struct power_supply_desc sm8350_bat_psy_desc = {
 	.properties = sm8350_bat_props,
 	.num_properties = ARRAY_SIZE(sm8350_bat_props),
 	.get_property = qcom_battmgr_bat_get_property,
+};
+
+static const enum power_supply_property lenovo_sm8475_bat_props[] = {
+	POWER_SUPPLY_PROP_STATUS,
+	POWER_SUPPLY_PROP_HEALTH,
+	POWER_SUPPLY_PROP_PRESENT,
+	POWER_SUPPLY_PROP_CHARGE_TYPE,
+	POWER_SUPPLY_PROP_CAPACITY,
+	POWER_SUPPLY_PROP_VOLTAGE_OCV,
+	POWER_SUPPLY_PROP_VOLTAGE_NOW,
+	POWER_SUPPLY_PROP_VOLTAGE_MAX,
+	POWER_SUPPLY_PROP_CURRENT_NOW,
+	POWER_SUPPLY_PROP_TEMP,
+	POWER_SUPPLY_PROP_TECHNOLOGY,
+	POWER_SUPPLY_PROP_CHARGE_COUNTER,
+	POWER_SUPPLY_PROP_CYCLE_COUNT,
+	POWER_SUPPLY_PROP_CHARGE_FULL_DESIGN,
+	POWER_SUPPLY_PROP_CHARGE_FULL,
+	POWER_SUPPLY_PROP_MODEL_NAME,
+	POWER_SUPPLY_PROP_TIME_TO_FULL_AVG,
+	POWER_SUPPLY_PROP_TIME_TO_EMPTY_AVG,
+	POWER_SUPPLY_PROP_INTERNAL_RESISTANCE,
+	POWER_SUPPLY_PROP_STATE_OF_HEALTH,
+	POWER_SUPPLY_PROP_POWER_NOW,
+	POWER_SUPPLY_PROP_CHARGE_BEHAVIOUR,
+};
+
+static const struct power_supply_desc lenovo_sm8475_bat_psy_desc = {
+	.name = "qcom-battmgr-bat",
+	.type = POWER_SUPPLY_TYPE_BATTERY,
+	.properties = lenovo_sm8475_bat_props,
+	.num_properties = ARRAY_SIZE(lenovo_sm8475_bat_props),
+	.get_property = qcom_battmgr_bat_get_property,
+	.set_property = qcom_battmgr_bat_set_property,
+	.property_is_writeable = qcom_battmgr_bat_is_writeable,
+	.charge_behaviours = BIT(POWER_SUPPLY_CHARGE_BEHAVIOUR_AUTO) |
+			     BIT(POWER_SUPPLY_CHARGE_BEHAVIOUR_INHIBIT_CHARGE),
 };
 
 static const enum power_supply_property sm8550_bat_props[] = {
@@ -1373,7 +1509,7 @@ static void qcom_battmgr_sm8350_callback(struct qcom_battmgr *battmgr,
 	size_t payload_len = len - sizeof(struct pmic_glink_hdr);
 	unsigned int val;
 
-	if (payload_len < sizeof(__le32)) {
+	if (payload_len < sizeof(__le32) && opcode != BATTMGR_BAT_PROPERTY_SET) {
 		dev_warn(battmgr->dev, "invalid payload length for %#x: %zd\n",
 			 opcode, len);
 		return;
@@ -1556,6 +1692,17 @@ static void qcom_battmgr_sm8350_callback(struct qcom_battmgr *battmgr,
 			break;
 		}
 		break;
+	case BATTMGR_BAT_PROPERTY_SET:
+		if (payload_len != sizeof(resp->intval)) {
+			dev_warn(battmgr->dev,
+				 "invalid payload length for %#x request: %zd\n",
+				 opcode, payload_len);
+			battmgr->error = -ENODATA;
+			goto out_complete;
+		}
+
+		battmgr->error = le32_to_cpu(resp->intval.result) ? -EIO : 0;
+		break;
 	case BATTMGR_REQUEST_NOTIFICATION:
 	case BATTMGR_CHG_CTRL_LIMIT_EN:
 		battmgr->error = 0;
@@ -1594,28 +1741,33 @@ static void qcom_battmgr_enable_worker(struct work_struct *work)
 	};
 	int ret;
 
+	mutex_lock(&battmgr->lock);
 	ret = qcom_battmgr_request(battmgr, &req, sizeof(req));
 	if (ret)
 		dev_err(battmgr->dev, "failed to request power notifications\n");
+	mutex_unlock(&battmgr->lock);
 }
 
 static void qcom_battmgr_pdr_notify(void *priv, int state)
 {
 	struct qcom_battmgr *battmgr = priv;
 
+	atomic_inc(&battmgr->charge_epoch);
 	if (state == SERVREG_SERVICE_STATE_UP) {
-		battmgr->service_up = true;
+		WRITE_ONCE(battmgr->service_up, true);
 		schedule_work(&battmgr->enable_work);
 	} else {
-		battmgr->service_up = false;
+		WRITE_ONCE(battmgr->service_up, false);
 	}
 }
 
 static const struct of_device_id qcom_battmgr_of_variants[] = {
+	{ .compatible = "lenovo,tb320fc-pmic-glink", .data = (void *)QCOM_BATTMGR_LENOVO_SM8475 },
 	{ .compatible = "qcom,glymur-pmic-glink", .data = (void *)QCOM_BATTMGR_X1E80100 },
 	{ .compatible = "qcom,kaanapali-pmic-glink", .data = (void *)QCOM_BATTMGR_SM8550 },
 	{ .compatible = "qcom,sc8180x-pmic-glink", .data = (void *)QCOM_BATTMGR_SC8280XP },
 	{ .compatible = "qcom,sc8280xp-pmic-glink", .data = (void *)QCOM_BATTMGR_SC8280XP },
+	{ .compatible = "qcom,sm8450-pmic-glink", .data = (void *)QCOM_BATTMGR_SM8450 },
 	{ .compatible = "qcom,sm8550-pmic-glink", .data = (void *)QCOM_BATTMGR_SM8550 },
 	{ .compatible = "qcom,x1e80100-pmic-glink", .data = (void *)QCOM_BATTMGR_X1E80100 },
 	/* Unmatched devices falls back to QCOM_BATTMGR_SM8350 */
@@ -1650,6 +1802,7 @@ static int qcom_battmgr_probe(struct auxiliary_device *adev,
 	psy_cfg_supply.num_supplicants = 1;
 
 	mutex_init(&battmgr->lock);
+	atomic_set(&battmgr->charge_epoch, 0);
 	init_completion(&battmgr->ack);
 
 	match = of_match_device(qcom_battmgr_of_variants, dev->parent);
@@ -1690,7 +1843,9 @@ static int qcom_battmgr_probe(struct auxiliary_device *adev,
 			return dev_err_probe(dev, PTR_ERR(battmgr->wls_psy),
 					     "failed to register wireless charing power supply\n");
 	} else {
-		if (battmgr->variant == QCOM_BATTMGR_SM8550)
+		if (battmgr->variant == QCOM_BATTMGR_LENOVO_SM8475)
+			psy_desc = &lenovo_sm8475_bat_psy_desc;
+		else if (battmgr->variant == QCOM_BATTMGR_SM8550)
 			psy_desc = &sm8550_bat_psy_desc;
 		else
 			psy_desc = &sm8350_bat_psy_desc;
