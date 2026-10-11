@@ -370,6 +370,45 @@ int drm_panel_get_modes(struct drm_panel *panel,
 }
 EXPORT_SYMBOL(drm_panel_get_modes);
 
+/**
+ * drm_panel_mode_valid - validate a mode against panel constraints
+ * @panel: DRM panel
+ * @mode: display mode to validate
+ *
+ * This function does not change panel state or access hardware.
+ *
+ * Return: MODE_OK if the panel accepts the mode or has no mode_valid callback,
+ * or a mode status explaining why the mode is unsupported.
+ */
+enum drm_mode_status drm_panel_mode_valid(struct drm_panel *panel,
+					  const struct drm_display_mode *mode)
+{
+	if (panel && panel->funcs && panel->funcs->mode_valid)
+		return panel->funcs->mode_valid(panel, mode);
+
+	return MODE_OK;
+}
+EXPORT_SYMBOL(drm_panel_mode_valid);
+
+/**
+ * drm_panel_mode_set - cache the mode selected for a panel
+ * @panel: DRM panel
+ * @mode: selected display mode
+ * @adjusted_mode: display controller's adjusted mode
+ *
+ * Cache mode information before the next prepare and enable sequence. The
+ * callback must copy information it retains and must not access hardware.
+ * Panels without a mode_set callback are unaffected.
+ */
+void drm_panel_mode_set(struct drm_panel *panel,
+			const struct drm_display_mode *mode,
+			const struct drm_display_mode *adjusted_mode)
+{
+	if (panel && panel->funcs && panel->funcs->mode_set)
+		panel->funcs->mode_set(panel, mode, adjusted_mode);
+}
+EXPORT_SYMBOL(drm_panel_mode_set);
+
 static void __drm_panel_free(struct kref *kref)
 {
 	struct drm_panel *panel = container_of(kref, struct drm_panel, refcount);
