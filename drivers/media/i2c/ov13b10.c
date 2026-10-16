@@ -7,7 +7,9 @@
 #include <linux/gpio/consumer.h>
 #include <linux/i2c.h>
 #include <linux/module.h>
+#include <linux/of.h>
 #include <linux/pm_runtime.h>
+#include <linux/property.h>
 #include <linux/regulator/consumer.h>
 #include <media/v4l2-ctrls.h>
 #include <media/v4l2-device.h>
@@ -1179,8 +1181,15 @@ static int ov13b10_identify_module(struct ov13b10 *ov13b)
 	if (ov13b->identified)
 		return 0;
 
-	ret = ov13b10_read_reg(ov13b, OV13B10_REG_CHIP_ID,
-			       OV13B10_REG_VALUE_24BIT, &val);
+	for (int retry = 0; retry < 5; retry++) {
+		ret = ov13b10_read_reg(ov13b, OV13B10_REG_CHIP_ID,
+				       OV13B10_REG_VALUE_24BIT, &val);
+		if (!ret && val == OV13B10_CHIP_ID) {
+			ov13b->identified = true;
+			return 0;
+		}
+		msleep(20);
+	}
 	if (ret)
 		return ret;
 
@@ -1228,9 +1237,12 @@ static int ov13b10_power_on(struct device *dev)
 		return ret;
 	}
 
+	/* Pulse reset: assert, wait, then deassert to release sensor */
+	gpiod_set_value_cansleep(ov13b10->reset, 1);
+	usleep_range(2000, 3000);
 	gpiod_set_value_cansleep(ov13b10->reset, 0);
-	/* 5ms to wait ready after XSHUTDN assert */
-	usleep_range(5000, 5500);
+	/* 10ms to wait ready after XSHUTDN release */
+	usleep_range(10000, 12000);
 
 	return 0;
 }
@@ -1491,7 +1503,7 @@ static int ov13b10_get_pm_resources(struct ov13b10 *ov13b)
 				     "failed to get imaging clock\n");
 
 	freq = clk_get_rate(ov13b->img_clk);
-	if (freq != OV13B10_EXT_CLK)
+	if (freq != OV13B10_EXT_CLK && freq != 24000000)
 		return dev_err_probe(ov13b->dev, -EINVAL,
 				     "external clock %lu is not supported\n",
 				     freq);
@@ -1588,7 +1600,6 @@ out_err:
 static int ov13b10_probe(struct i2c_client *client)
 {
 	struct ov13b10 *ov13b;
-	bool full_power;
 	int ret;
 
 	ov13b = devm_kzalloc(&client->dev, sizeof(*ov13b), GFP_KERNEL);
@@ -1611,25 +1622,32 @@ static int ov13b10_probe(struct i2c_client *client)
 	if (ret)
 		return ret;
 
-	full_power = acpi_dev_state_d0(ov13b->dev);
-	if (full_power) {
-		ret = ov13b10_power_on(ov13b->dev);
-		if (ret) {
-			dev_err(ov13b->dev, "failed to power on\n");
-			return ret;
-		}
-
-		/* Check module identity */
-		ret = ov13b10_identify_module(ov13b);
-		if (ret) {
-			dev_err(ov13b->dev, "failed to find sensor: %d\n", ret);
-			goto error_power_off;
-		}
+	pm_runtime_set_suspended(ov13b->dev);
+	pm_runtime_enable(ov13b->dev);
+	ret = pm_runtime_resume_and_get(ov13b->dev);
+	if (ret < 0) {
+		dev_err(ov13b->dev, "failed to resume runtime PM: %d\n", ret);
+		pm_runtime_disable(ov13b->dev);
+		return ret;
 	}
+
+	/* Check module identity while GenPD and power are active */
+	ret = ov13b10_identify_module(ov13b);
+	if (ret) {
+		dev_warn(ov13b->dev, "sensor not responding yet (%d), deferring probe\n", ret);
+		pm_runtime_put_sync_suspend(ov13b->dev);
+		pm_runtime_disable(ov13b->dev);
+		return -EPROBE_DEFER;
+	}
+
+	pm_runtime_set_autosuspend_delay(ov13b->dev, 1000);
+	pm_runtime_use_autosuspend(ov13b->dev);
+	pm_runtime_mark_last_busy(ov13b->dev);
+	pm_runtime_put_autosuspend(ov13b->dev);
 
 	ret = ov13b10_init_controls(ov13b);
 	if (ret)
-		goto error_power_off;
+		goto error_pm_disable;
 
 	/* Initialize subdev */
 	ov13b->sd.internal_ops = &ov13b10_internal_ops;
@@ -1645,17 +1663,6 @@ static int ov13b10_probe(struct i2c_client *client)
 		goto error_handler_free;
 	}
 
-
-	/*
-	 * Device is already turned on by i2c-core with ACPI domain PM.
-	 * Enable runtime PM and turn off the device.
-	 */
-	/* Set the device's state to active if it's in D0 state. */
-	if (full_power)
-		pm_runtime_set_active(ov13b->dev);
-	pm_runtime_enable(ov13b->dev);
-	pm_runtime_idle(ov13b->dev);
-
 	ret = v4l2_async_register_subdev_sensor(&ov13b->sd);
 	if (ret < 0)
 		goto error_media_entity_runtime_pm;
@@ -1663,17 +1670,12 @@ static int ov13b10_probe(struct i2c_client *client)
 	return 0;
 
 error_media_entity_runtime_pm:
-	pm_runtime_disable(ov13b->dev);
-	if (full_power)
-		pm_runtime_set_suspended(ov13b->dev);
 	media_entity_cleanup(&ov13b->sd.entity);
-
 error_handler_free:
-	ov13b10_free_controls(ov13b);
-	dev_err(ov13b->dev, "%s failed:%d\n", __func__, ret);
-
-error_power_off:
-	ov13b10_power_off(ov13b->dev);
+	v4l2_ctrl_handler_free(ov13b->sd.ctrl_handler);
+error_pm_disable:
+	pm_runtime_disable(ov13b->dev);
+	pm_runtime_set_suspended(ov13b->dev);
 
 	return ret;
 }
@@ -1705,14 +1707,28 @@ static const struct acpi_device_id ov13b10_acpi_ids[] = {
 MODULE_DEVICE_TABLE(acpi, ov13b10_acpi_ids);
 #endif
 
+static const struct of_device_id ov13b10_of_match[] = {
+	{ .compatible = "ovti,ov13b10" },
+	{ /* sentinel */ }
+};
+MODULE_DEVICE_TABLE(of, ov13b10_of_match);
+
+static const struct i2c_device_id ov13b10_id_table[] = {
+	{ "ov13b10", 0 },
+	{ /* sentinel */ }
+};
+MODULE_DEVICE_TABLE(i2c, ov13b10_id_table);
+
 static struct i2c_driver ov13b10_i2c_driver = {
 	.driver = {
 		.name = "ov13b10",
 		.pm = pm_ptr(&ov13b10_pm_ops),
+		.of_match_table = ov13b10_of_match,
 		.acpi_match_table = ACPI_PTR(ov13b10_acpi_ids),
 	},
 	.probe = ov13b10_probe,
 	.remove = ov13b10_remove,
+	.id_table = ov13b10_id_table,
 	.flags = I2C_DRV_ACPI_WAIVE_D0_PROBE,
 };
 
