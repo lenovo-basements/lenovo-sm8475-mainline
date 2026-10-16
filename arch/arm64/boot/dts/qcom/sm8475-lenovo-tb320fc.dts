@@ -133,6 +133,16 @@
 		startup-delay-us = <10000>;
 	};
 
+	camera_ldo_dovdd: regulator-camera-ldo-dovdd {
+		compatible = "regulator-fixed";
+		regulator-name = "camera_ldo_dovdd";
+		regulator-min-microvolt = <1800000>;
+		regulator-max-microvolt = <1800000>;
+		gpio = <&tlmm 122 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+		regulator-always-on;
+	};
+
 	reserved-memory {
 		splash_region: splash_region {
 			reg = <0 0xb8000000 0 0x2b00000>;
@@ -141,7 +151,10 @@
 		ramoops@a7ce00000 {
 			compatible = "ramoops";
 			reg = <0xa 0x7ce00000 0 0x200000>;
-			pmsg-size = <0x200000>;
+			no-map;
+			record-size = <0x40000>;
+			console-size = <0x40000>;
+			pmsg-size = <0x80000>;
 			mem-type = <2>;
 		};
 	};
@@ -219,6 +232,7 @@
 		qcom,pmic-id = "c";
 		vdd-bob-supply = <&vph_pwr>;
 		vdd-s1-supply = <&vph_pwr>;
+		vdd-l3-l4-l5-l7-l13-supply = <&vreg_bob>;
 		vdd-l6-l9-l11-supply = <&vreg_bob>;
 		vdd-l10-supply = <&vreg_s12b_1p25>;
 		vdd-l1-l12-supply = <&vreg_bob>;
@@ -232,6 +246,13 @@
 			regulator-min-microvolt = <3008000>;
 			regulator-max-microvolt = <3960000>;
 			regulator-initial-mode = <RPMH_REGULATOR_MODE_AUTO>;
+		};
+		vreg_l4c_1p8: ldo4 {
+			regulator-name = "vreg_l4c_1p8";
+			regulator-min-microvolt = <1800000>;
+			regulator-max-microvolt = <1800000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+			regulator-always-on;
 		};
 		vreg_l10c_1p2: ldo10 {
 			regulator-name = "vreg_l10c_1p2";
@@ -411,10 +432,56 @@
 		bias-pull-up;
 		input-enable;
 	};
+
+	camera_rear_mclk: camera-rear-mclk-state {
+		pins = "gpio100";
+		function = "cam_mclk";
+		drive-strength = <2>;
+		bias-disable;
+	};
+
+	camera_rear_reset: camera-rear-reset-state {
+		pins = "gpio25";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-disable;
+		output-high;
+	};
+
+	camera_front_mclk: camera-front-mclk-state {
+		pins = "gpio102";
+		function = "cam_mclk";
+		drive-strength = <2>;
+		bias-disable;
+	};
+
+	camera_front_reset: camera-front-reset-state {
+		pins = "gpio117";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-disable;
+		output-high;
+	};
+
+	camera_aux_mclk: camera-aux-mclk-state {
+		pins = "gpio101";
+		function = "cam_mclk";
+		drive-strength = <2>;
+		bias-disable;
+	};
+
+	camera_aux_reset: camera-aux-reset-state {
+		pins = "gpio24";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-disable;
+		output-high;
+	};
 };
 
 &i2c5 {
 	status = "okay";
+
 	repeater: redriver@4f {
 		compatible = "nxp,ptn3222";
 		reg = <0x4f>;
@@ -450,6 +517,7 @@
 	status = "okay";
 	dr_mode = "otg";
 	usb-role-switch;
+	wakeup-source;
 };
 
 / {
@@ -1007,7 +1075,110 @@
 };
 
 &cci0 {
+	pinctrl-0 = <&cci0_default>, <&cci1_default>,
+		    <&camera_rear_reset>, <&camera_rear_mclk>,
+		    <&camera_front_reset>, <&camera_front_mclk>;
 	status = "okay";
+};
+
+&cci0_i2c0 {
+	actuator@c {
+		compatible = "dongwoon,dw9714";
+		reg = <0x0c>;
+		vcc-supply = <&vreg_bob>;
+	};
+
+	eeprom@58 {
+		compatible = "atmel,24c64";
+		reg = <0x58>;
+		vcc-supply = <&camera_ldo_dovdd>;
+		read-only;
+	};
+
+	camera@36 {
+		compatible = "ovti,ov13b10";
+		reg = <0x36>;
+		orientation = <1>;
+		rotation = <270>;
+
+		clocks = <&camcc CAM_CC_MCLK0_CLK>;
+		assigned-clocks = <&camcc CAM_CC_MCLK0_CLK>;
+		assigned-clock-rates = <24000000>;
+
+		power-domains = <&camcc TITAN_TOP_GDSC>;
+
+		reset-gpios = <&tlmm 25 GPIO_ACTIVE_LOW>;
+
+		dovdd-supply = <&camera_ldo_dovdd>;
+		avdd-supply = <&vreg_bob>;
+		dvdd-supply = <&camera_ldo_dovdd>;
+
+		port {
+			ov13b10_out: endpoint {
+				link-frequencies = /bits/ 64 <560000000>;
+				data-lanes = <1 2 3 4>;
+				remote-endpoint = <&camss_csiphy0_ep>;
+			};
+		};
+	};
+};
+
+&cci0_i2c1 {
+	camera@10 {
+		compatible = "samsung,s5k4h7", "galaxycore,gc08a3";
+		reg = <0x10>;
+
+		clocks = <&camcc CAM_CC_MCLK2_CLK>;
+		assigned-clocks = <&camcc CAM_CC_MCLK2_CLK>;
+		assigned-clock-rates = <24000000>;
+
+		power-domains = <&camcc TITAN_TOP_GDSC>;
+
+		reset-gpios = <&tlmm 117 GPIO_ACTIVE_LOW>;
+
+		dovdd-supply = <&camera_ldo_dovdd>;
+		avdd-supply = <&vreg_bob>;
+		dvdd-supply = <&camera_ldo_dovdd>;
+
+		port {
+			s5k4h7_out: endpoint {
+				link-frequencies = /bits/ 64 <336000000 207000000>;
+				data-lanes = <1 2 3 4>;
+			};
+		};
+	};
+};
+
+&cci1 {
+	pinctrl-0 = <&cci2_default>, <&cci3_default>,
+		    <&camera_aux_reset>, <&camera_aux_mclk>;
+	status = "okay";
+};
+
+&cci1_i2c0 {
+	camera@36 {
+		compatible = "smartsens,sc202cs", "galaxycore,gc02m1";
+		reg = <0x36>;
+
+		clocks = <&camcc CAM_CC_MCLK1_CLK>;
+		assigned-clocks = <&camcc CAM_CC_MCLK1_CLK>;
+		assigned-clock-rates = <24000000>;
+
+		power-domains = <&camcc TITAN_TOP_GDSC>;
+
+		reset-gpios = <&tlmm 24 GPIO_ACTIVE_LOW>;
+
+		dovdd-supply = <&camera_ldo_dovdd>;
+		avdd-supply = <&vreg_bob>;
+		dvdd-supply = <&camera_ldo_dovdd>;
+
+		port {
+			sc202cs_out: endpoint {
+				link-frequencies = /bits/ 64 <336000000 207000000>;
+				data-lanes = <1>;
+			};
+		};
+	};
 };
 
 &soc {
