@@ -6,6 +6,7 @@
 #include <linux/clk-provider.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
+#include <linux/pm_runtime.h>
 #include <linux/regmap.h>
 
 #include <dt-bindings/clock/qcom,sm8450-camcc.h>
@@ -1622,7 +1623,7 @@ static struct clk_branch cam_cc_core_ahb_clk = {
 				&cam_cc_slow_ahb_clk_src.clkr.hw,
 			},
 			.num_parents = 1,
-			.flags = CLK_SET_RATE_PARENT,
+			.flags = CLK_SET_RATE_PARENT | CLK_IS_CRITICAL,
 			.ops = &clk_branch2_ops,
 		},
 	},
@@ -2915,6 +2916,7 @@ static struct clk_alpha_pll *cam_cc_sm8450_plls[] = {
 };
 
 static const u32 cam_cc_sm8450_critical_cbcrs[] = {
+	0x131f0, /* CAM_CC_CORE_AHB_CLK */
 	0x1320c, /* CAM_CC_GDSC_CLK */
 };
 
@@ -2933,9 +2935,9 @@ static struct gdsc bps_gdsc = {
 	.pd = {
 		.name = "bps_gdsc",
 	},
-	.flags = HW_CTRL | POLL_CFG_GDSCR,
+	.flags = HW_CTRL,
 	.parent = &titan_top_gdsc.pd,
-	.pwrsts = PWRSTS_OFF_ON,
+	.pwrsts = PWRSTS_RET_ON,
 };
 
 static struct gdsc ipe_0_gdsc = {
@@ -2943,9 +2945,9 @@ static struct gdsc ipe_0_gdsc = {
 	.pd = {
 		.name = "ipe_0_gdsc",
 	},
-	.flags = HW_CTRL | POLL_CFG_GDSCR,
+	.flags = HW_CTRL,
 	.parent = &titan_top_gdsc.pd,
-	.pwrsts = PWRSTS_OFF_ON,
+	.pwrsts = PWRSTS_RET_ON,
 };
 
 static struct gdsc sbi_gdsc = {
@@ -2953,9 +2955,8 @@ static struct gdsc sbi_gdsc = {
 	.pd = {
 		.name = "sbi_gdsc",
 	},
-	.flags = POLL_CFG_GDSCR,
 	.parent = &titan_top_gdsc.pd,
-	.pwrsts = PWRSTS_OFF_ON,
+	.pwrsts = PWRSTS_RET_ON,
 };
 
 static struct gdsc ife_0_gdsc = {
@@ -2963,9 +2964,8 @@ static struct gdsc ife_0_gdsc = {
 	.pd = {
 		.name = "ife_0_gdsc",
 	},
-	.flags = POLL_CFG_GDSCR,
 	.parent = &titan_top_gdsc.pd,
-	.pwrsts = PWRSTS_OFF_ON,
+	.pwrsts = PWRSTS_RET_ON,
 };
 
 static struct gdsc ife_1_gdsc = {
@@ -2973,9 +2973,8 @@ static struct gdsc ife_1_gdsc = {
 	.pd = {
 		.name = "ife_1_gdsc",
 	},
-	.flags = POLL_CFG_GDSCR,
 	.parent = &titan_top_gdsc.pd,
-	.pwrsts = PWRSTS_OFF_ON,
+	.pwrsts = PWRSTS_RET_ON,
 };
 
 static struct gdsc ife_2_gdsc = {
@@ -2983,9 +2982,8 @@ static struct gdsc ife_2_gdsc = {
 	.pd = {
 		.name = "ife_2_gdsc",
 	},
-	.flags = POLL_CFG_GDSCR,
 	.parent = &titan_top_gdsc.pd,
-	.pwrsts = PWRSTS_OFF_ON,
+	.pwrsts = PWRSTS_RET_ON,
 };
 
 static struct gdsc sfe_0_gdsc = {
@@ -2993,9 +2991,8 @@ static struct gdsc sfe_0_gdsc = {
 	.pd = {
 		.name = "sfe_0_gdsc",
 	},
-	.flags = POLL_CFG_GDSCR,
 	.parent = &titan_top_gdsc.pd,
-	.pwrsts = PWRSTS_OFF_ON,
+	.pwrsts = PWRSTS_RET_ON,
 };
 
 static struct gdsc sfe_1_gdsc = {
@@ -3003,9 +3000,8 @@ static struct gdsc sfe_1_gdsc = {
 	.pd = {
 		.name = "sfe_1_gdsc",
 	},
-	.flags = POLL_CFG_GDSCR,
 	.parent = &titan_top_gdsc.pd,
-	.pwrsts = PWRSTS_OFF_ON,
+	.pwrsts = PWRSTS_RET_ON,
 };
 
 static struct gdsc titan_top_gdsc = {
@@ -3013,8 +3009,8 @@ static struct gdsc titan_top_gdsc = {
 	.pd = {
 		.name = "titan_top_gdsc",
 	},
-	.flags = POLL_CFG_GDSCR,
-	.pwrsts = PWRSTS_OFF_ON,
+	.flags = ALWAYS_ON,
+	.pwrsts = PWRSTS_RET_ON,
 };
 
 static struct gdsc *cam_cc_sm8450_gdscs[] = {
@@ -3057,6 +3053,8 @@ MODULE_DEVICE_TABLE(of, cam_cc_sm8450_match_table);
 
 static int cam_cc_sm8450_probe(struct platform_device *pdev)
 {
+	int ret;
+
 	if (of_device_is_compatible(pdev->dev.of_node, "qcom,sm8475-camcc")) {
 		/* Update CAMCC PLL0 */
 		cam_cc_pll0.regs = clk_alpha_pll_regs[CLK_ALPHA_PLL_TYPE_LUCID_OLE];
@@ -3114,7 +3112,13 @@ static int cam_cc_sm8450_probe(struct platform_device *pdev)
 		cam_cc_pll8.config = &sm8475_cam_cc_pll8_config;
 	}
 
-	return qcom_cc_probe(pdev, &cam_cc_sm8450_desc);
+	ret = qcom_cc_probe(pdev, &cam_cc_sm8450_desc);
+	if (ret)
+		return ret;
+
+	pm_runtime_get_sync(&pdev->dev);
+
+	return 0;
 }
 
 static struct platform_driver cam_cc_sm8450_driver = {
