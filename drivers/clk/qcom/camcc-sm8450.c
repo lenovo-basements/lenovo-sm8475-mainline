@@ -6,6 +6,7 @@
 #include <linux/clk-provider.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
+#include <linux/pm_runtime.h>
 #include <linux/regmap.h>
 
 #include <dt-bindings/clock/qcom,sm8450-camcc.h>
@@ -3055,9 +3056,153 @@ static const struct of_device_id cam_cc_sm8450_match_table[] = {
 };
 MODULE_DEVICE_TABLE(of, cam_cc_sm8450_match_table);
 
+/*
+ * SM8475 (Lenovo TB320FC) camera power handling: the core AHB clock stays on,
+ * the GDSCs retain state instead of collapsing, TITAN_TOP is kept on at
+ * runtime, and the clock controller itself stays runtime-active.
+ */
+static const u32 cam_cc_sm8475_critical_cbcrs[] = {
+	0x131f0, /* CAM_CC_CORE_AHB_CLK */
+	0x1320c, /* CAM_CC_GDSC_CLK */
+};
+
+static const struct qcom_cc_driver_data cam_cc_sm8475_driver_data = {
+	.alpha_plls = cam_cc_sm8450_plls,
+	.num_alpha_plls = ARRAY_SIZE(cam_cc_sm8450_plls),
+	.clk_cbcrs = cam_cc_sm8475_critical_cbcrs,
+	.num_clk_cbcrs = ARRAY_SIZE(cam_cc_sm8475_critical_cbcrs),
+};
+
+static const struct qcom_cc_desc cam_cc_sm8475_desc = {
+	.config = &cam_cc_sm8450_regmap_config,
+	.clks = cam_cc_sm8450_clocks,
+	.num_clks = ARRAY_SIZE(cam_cc_sm8450_clocks),
+	.resets = cam_cc_sm8450_resets,
+	.num_resets = ARRAY_SIZE(cam_cc_sm8450_resets),
+	.gdscs = cam_cc_sm8450_gdscs,
+	.num_gdscs = ARRAY_SIZE(cam_cc_sm8450_gdscs),
+	.use_rpm = true,
+	.driver_data = &cam_cc_sm8475_driver_data,
+};
+
+static struct gdsc sm8475_titan_top_gdsc = {
+	.gdscr = 0x131dc,
+	.pd = {
+		.name = "titan_top_gdsc",
+	},
+	.flags = RPM_ALWAYS_ON,
+	.pwrsts = PWRSTS_RET_ON,
+};
+
+static struct gdsc sm8475_bps_gdsc = {
+	.gdscr = 0x10004,
+	.pd = {
+		.name = "bps_gdsc",
+	},
+	.flags = HW_CTRL,
+	.parent = &sm8475_titan_top_gdsc.pd,
+	.pwrsts = PWRSTS_RET_ON,
+};
+
+static struct gdsc sm8475_ipe_0_gdsc = {
+	.gdscr = 0x10078,
+	.pd = {
+		.name = "ipe_0_gdsc",
+	},
+	.flags = HW_CTRL,
+	.parent = &sm8475_titan_top_gdsc.pd,
+	.pwrsts = PWRSTS_RET_ON,
+};
+
+static struct gdsc sm8475_sbi_gdsc = {
+	.gdscr = 0x100d0,
+	.pd = {
+		.name = "sbi_gdsc",
+	},
+	.parent = &sm8475_titan_top_gdsc.pd,
+	.pwrsts = PWRSTS_RET_ON,
+};
+
+static struct gdsc sm8475_ife_0_gdsc = {
+	.gdscr = 0x11004,
+	.pd = {
+		.name = "ife_0_gdsc",
+	},
+	.parent = &sm8475_titan_top_gdsc.pd,
+	.pwrsts = PWRSTS_RET_ON,
+};
+
+static struct gdsc sm8475_ife_1_gdsc = {
+	.gdscr = 0x12004,
+	.pd = {
+		.name = "ife_1_gdsc",
+	},
+	.parent = &sm8475_titan_top_gdsc.pd,
+	.pwrsts = PWRSTS_RET_ON,
+};
+
+static struct gdsc sm8475_ife_2_gdsc = {
+	.gdscr = 0x12050,
+	.pd = {
+		.name = "ife_2_gdsc",
+	},
+	.parent = &sm8475_titan_top_gdsc.pd,
+	.pwrsts = PWRSTS_RET_ON,
+};
+
+static struct gdsc sm8475_sfe_0_gdsc = {
+	.gdscr = 0x13050,
+	.pd = {
+		.name = "sfe_0_gdsc",
+	},
+	.parent = &sm8475_titan_top_gdsc.pd,
+	.pwrsts = PWRSTS_RET_ON,
+};
+
+static struct gdsc sm8475_sfe_1_gdsc = {
+	.gdscr = 0x13098,
+	.pd = {
+		.name = "sfe_1_gdsc",
+	},
+	.parent = &sm8475_titan_top_gdsc.pd,
+	.pwrsts = PWRSTS_RET_ON,
+};
+
+static void cam_cc_sm8475_fixup(void)
+{
+	static const struct {
+		struct gdsc *sm8450, *sm8475;
+	} swap[] = {
+		{ &titan_top_gdsc, &sm8475_titan_top_gdsc },
+		{ &bps_gdsc, &sm8475_bps_gdsc },
+		{ &ipe_0_gdsc, &sm8475_ipe_0_gdsc },
+		{ &sbi_gdsc, &sm8475_sbi_gdsc },
+		{ &ife_0_gdsc, &sm8475_ife_0_gdsc },
+		{ &ife_1_gdsc, &sm8475_ife_1_gdsc },
+		{ &ife_2_gdsc, &sm8475_ife_2_gdsc },
+		{ &sfe_0_gdsc, &sm8475_sfe_0_gdsc },
+		{ &sfe_1_gdsc, &sm8475_sfe_1_gdsc },
+	};
+	unsigned int i, j;
+
+	/* Kept on through clk_cbcrs instead of being managed as a clock. */
+	cam_cc_sm8450_clocks[CAM_CC_CORE_AHB_CLK] = NULL;
+
+	for (i = 0; i < ARRAY_SIZE(cam_cc_sm8450_gdscs); i++)
+		for (j = 0; j < ARRAY_SIZE(swap); j++)
+			if (cam_cc_sm8450_gdscs[i] == swap[j].sm8450)
+				cam_cc_sm8450_gdscs[i] = swap[j].sm8475;
+}
+
 static int cam_cc_sm8450_probe(struct platform_device *pdev)
 {
+	const struct qcom_cc_desc *desc = &cam_cc_sm8450_desc;
+	int ret;
+
 	if (of_device_is_compatible(pdev->dev.of_node, "qcom,sm8475-camcc")) {
+		cam_cc_sm8475_fixup();
+		desc = &cam_cc_sm8475_desc;
+
 		/* Update CAMCC PLL0 */
 		cam_cc_pll0.regs = clk_alpha_pll_regs[CLK_ALPHA_PLL_TYPE_LUCID_OLE];
 		cam_cc_pll0_out_even.regs = clk_alpha_pll_regs[CLK_ALPHA_PLL_TYPE_LUCID_OLE];
@@ -3114,7 +3259,11 @@ static int cam_cc_sm8450_probe(struct platform_device *pdev)
 		cam_cc_pll8.config = &sm8475_cam_cc_pll8_config;
 	}
 
-	return qcom_cc_probe(pdev, &cam_cc_sm8450_desc);
+	ret = qcom_cc_probe(pdev, desc);
+	if (ret || desc != &cam_cc_sm8475_desc)
+		return ret;
+
+	return pm_runtime_resume_and_get(&pdev->dev);
 }
 
 static struct platform_driver cam_cc_sm8450_driver = {
