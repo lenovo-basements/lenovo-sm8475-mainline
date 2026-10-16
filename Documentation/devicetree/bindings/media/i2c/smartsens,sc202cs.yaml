@@ -1,0 +1,107 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/media/i2c/smartsens,sc202cs.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: SmartSens SC202CS 2MP CMOS Image Sensor
+
+maintainers:
+  - lolipuru <banstellazz@gmail.com>
+
+description:
+  The SmartSens SC202CS is a 2 megapixel RAW Bayer image sensor with a
+  single-lane MIPI CSI-2 interface, controlled over I2C.
+
+allOf:
+  - $ref: /schemas/media/video-interface-devices.yaml#
+
+properties:
+  compatible:
+    const: smartsens,sc202cs
+
+  reg:
+    maxItems: 1
+
+  clocks:
+    maxItems: 1
+
+  power-domains:
+    maxItems: 1
+
+  avdd-supply:
+    description: Analogue circuit voltage supply.
+
+  dovdd-supply:
+    description: I/O circuit voltage supply.
+
+  dvdd-supply:
+    description: Digital circuit voltage supply.
+
+  reset-gpios:
+    description: Active low GPIO connected to the XSHUTDOWN pin of the sensor.
+    maxItems: 1
+
+  port:
+    $ref: /schemas/graph.yaml#/$defs/port-base
+    additionalProperties: false
+
+    properties:
+      endpoint:
+        $ref: /schemas/media/video-interfaces.yaml#
+        unevaluatedProperties: false
+
+        properties:
+          data-lanes:
+            description: One MIPI CSI-2 data lane.
+            items:
+              - const: 1
+          link-frequencies: true
+
+        required:
+          - data-lanes
+          - link-frequencies
+
+required:
+  - compatible
+  - reg
+  - clocks
+  - port
+
+unevaluatedProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/gpio/gpio.h>
+
+    i2c {
+        #address-cells = <1>;
+        #size-cells = <0>;
+
+        camera@36 {
+            compatible = "smartsens,sc202cs";
+            reg = <0x36>;
+
+            clocks = <&cam_mclk>;
+            assigned-clocks = <&cam_mclk>;
+            assigned-clock-rates = <24000000>;
+
+            reset-gpios = <&tlmm 25 GPIO_ACTIVE_LOW>;
+
+            avdd-supply = <&vreg_cam_avdd>;
+            dovdd-supply = <&vreg_cam_dovdd>;
+            dvdd-supply = <&vreg_cam_dvdd>;
+
+            orientation = <1>;
+            rotation = <270>;
+
+            port {
+                sc202cs_ep: endpoint {
+                    data-lanes = <1>;
+                    link-frequencies = /bits/ 64 <336000000 207000000>;
+                    remote-endpoint = <&csiphy_ep>;
+                };
+            };
+        };
+    };
+...
