@@ -604,10 +604,11 @@ static int gc08a3_power_on(struct device *dev)
 		return ret;
 	}
 
+	/* Pulse reset: assert, wait, then deassert to release sensor */
+	gpiod_set_value_cansleep(gc08a3->reset_gpio, 1);
 	fsleep(GC08A3_SLEEP_US);
-
 	gpiod_set_value_cansleep(gc08a3->reset_gpio, 0);
-	fsleep(GC08A3_SLEEP_US);
+	usleep_range(10000, 12000);
 
 	return 0;
 }
@@ -1028,9 +1029,7 @@ static int gc08a3_parse_fwnode(struct gc08a3 *gc08a3)
 	int ret;
 	struct device *dev = gc08a3->dev;
 
-	endpoint =
-		fwnode_graph_get_endpoint_by_id(dev_fwnode(dev), 0, 0,
-						FWNODE_GRAPH_ENDPOINT_NEXT);
+	endpoint = fwnode_graph_get_next_endpoint(dev_fwnode(dev), NULL);
 	if (!endpoint) {
 		dev_err(dev, "endpoint node not found\n");
 		return -EINVAL;
@@ -1157,24 +1156,34 @@ error_ctrls:
 	return ret;
 }
 
+#define S5K4H7_REG_CHIP_ID CCI_REG16(0x0000)
+#define S5K4H7_CHIP_ID 0x487b
+
 static int gc08a3_identify_module(struct gc08a3 *gc08a3)
 {
-	u64 val;
+	u64 val = 0;
 	int ret;
 
+	ret = cci_read(gc08a3->regmap, S5K4H7_REG_CHIP_ID, &val, NULL);
+	if (!ret && ((val & 0xffff) == S5K4H7_CHIP_ID)) {
+		dev_info(gc08a3->dev, "found Samsung S5K4H7 sensor (chip ID 0x%04llx)\n", val);
+		return 0;
+	}
+
 	ret = cci_read(gc08a3->regmap, GC08A3_REG_CHIP_ID, &val, NULL);
+	if (!ret && ((val & 0xffff) == GC08A3_CHIP_ID)) {
+		dev_info(gc08a3->dev, "found GalaxyCore GC08A3 sensor (chip ID 0x%04llx)\n", val);
+		return 0;
+	}
+
 	if (ret) {
-		dev_err(gc08a3->dev, "failed to read chip id");
+		dev_err(gc08a3->dev, "failed to read chip id: %d\n", ret);
 		return ret;
 	}
 
-	if (val != GC08A3_CHIP_ID) {
-		dev_err(gc08a3->dev, "chip id mismatch: 0x%x!=0x%llx",
-			GC08A3_CHIP_ID, val);
-		return -ENXIO;
-	}
-
-	return 0;
+	dev_err(gc08a3->dev, "sensor chip id mismatch (read 0x%llx, expected 0x%x or 0x%x)\n",
+		val, S5K4H7_CHIP_ID, GC08A3_CHIP_ID);
+	return -ENXIO;
 }
 
 static int gc08a3_probe(struct i2c_client *client)
@@ -1218,21 +1227,32 @@ static int gc08a3_probe(struct i2c_client *client)
 	gc08a3->sd.internal_ops = &gc08a3_internal_ops;
 	gc08a3->cur_mode = &gc08a3_modes[0];
 
-	ret = gc08a3_power_on(gc08a3->dev);
-	if (ret)
-		return dev_err_probe(dev, ret,
-				     "failed to sensor power on\n");
+	pm_runtime_set_suspended(gc08a3->dev);
+	pm_runtime_enable(gc08a3->dev);
+	ret = pm_runtime_resume_and_get(gc08a3->dev);
+	if (ret < 0) {
+		dev_err(dev, "failed to resume runtime PM: %d\n", ret);
+		pm_runtime_disable(gc08a3->dev);
+		return ret;
+	}
 
 	ret = gc08a3_identify_module(gc08a3);
 	if (ret) {
-		dev_err(&client->dev, "failed to find sensor: %d\n", ret);
-		goto err_power_off;
+		dev_warn(&client->dev, "sensor not responding yet (%d), deferring probe\n", ret);
+		pm_runtime_put_sync_suspend(gc08a3->dev);
+		pm_runtime_disable(gc08a3->dev);
+		return -EPROBE_DEFER;
 	}
+
+	pm_runtime_set_autosuspend_delay(gc08a3->dev, 1000);
+	pm_runtime_use_autosuspend(gc08a3->dev);
+	pm_runtime_mark_last_busy(gc08a3->dev);
+	pm_runtime_put_autosuspend(gc08a3->dev);
 
 	ret = gc08a3_init_controls(gc08a3);
 	if (ret) {
 		dev_err(&client->dev, "failed to init controls: %d", ret);
-		goto err_power_off;
+		goto err_rpm;
 	}
 
 	gc08a3->sd.flags |= V4L2_SUBDEV_FL_HAS_DEVNODE;
@@ -1253,11 +1273,8 @@ static int gc08a3_probe(struct i2c_client *client)
 		goto err_media_entity_cleanup;
 	}
 
-	pm_runtime_set_active(gc08a3->dev);
-	pm_runtime_enable(gc08a3->dev);
 	pm_runtime_set_autosuspend_delay(gc08a3->dev, 1000);
 	pm_runtime_use_autosuspend(gc08a3->dev);
-	pm_runtime_idle(gc08a3->dev);
 
 	ret = v4l2_async_register_subdev_sensor(&gc08a3->sd);
 	if (ret < 0) {
@@ -1276,9 +1293,6 @@ err_media_entity_cleanup:
 
 err_v4l2_ctrl_handler_free:
 	v4l2_ctrl_handler_free(gc08a3->sd.ctrl_handler);
-
-err_power_off:
-	gc08a3_power_off(gc08a3->dev);
 
 	return ret;
 }
@@ -1301,6 +1315,7 @@ static void gc08a3_remove(struct i2c_client *client)
 
 static const struct of_device_id gc08a3_of_match[] = {
 	{ .compatible = "galaxycore,gc08a3" },
+	{ .compatible = "samsung,s5k4h7" },
 	{}
 };
 MODULE_DEVICE_TABLE(of, gc08a3_of_match);
