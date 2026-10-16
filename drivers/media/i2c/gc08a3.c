@@ -1156,34 +1156,25 @@ error_ctrls:
 	return ret;
 }
 
-#define S5K4H7_REG_CHIP_ID CCI_REG16(0x0000)
-#define S5K4H7_CHIP_ID 0x487b
-
 static int gc08a3_identify_module(struct gc08a3 *gc08a3)
 {
 	u64 val = 0;
 	int ret;
 
-	ret = cci_read(gc08a3->regmap, S5K4H7_REG_CHIP_ID, &val, NULL);
-	if (!ret && ((val & 0xffff) == S5K4H7_CHIP_ID)) {
-		dev_info(gc08a3->dev, "found Samsung S5K4H7 sensor (chip ID 0x%04llx)\n", val);
-		return 0;
-	}
-
 	ret = cci_read(gc08a3->regmap, GC08A3_REG_CHIP_ID, &val, NULL);
-	if (!ret && ((val & 0xffff) == GC08A3_CHIP_ID)) {
-		dev_info(gc08a3->dev, "found GalaxyCore GC08A3 sensor (chip ID 0x%04llx)\n", val);
-		return 0;
-	}
-
 	if (ret) {
 		dev_err(gc08a3->dev, "failed to read chip id: %d\n", ret);
 		return ret;
 	}
 
-	dev_err(gc08a3->dev, "sensor chip id mismatch (read 0x%llx, expected 0x%x or 0x%x)\n",
-		val, S5K4H7_CHIP_ID, GC08A3_CHIP_ID);
-	return -ENXIO;
+	if ((val & 0xffff) != GC08A3_CHIP_ID) {
+		dev_err(gc08a3->dev, "sensor chip id mismatch (read 0x%llx, expected 0x%x)\n",
+			val, GC08A3_CHIP_ID);
+		return -ENXIO;
+	}
+
+	dev_info(gc08a3->dev, "found GalaxyCore GC08A3 sensor (chip ID 0x%04llx)\n", val);
+	return 0;
 }
 
 static int gc08a3_probe(struct i2c_client *client)
@@ -1315,7 +1306,6 @@ static void gc08a3_remove(struct i2c_client *client)
 
 static const struct of_device_id gc08a3_of_match[] = {
 	{ .compatible = "galaxycore,gc08a3" },
-	{ .compatible = "samsung,s5k4h7" },
 	{}
 };
 MODULE_DEVICE_TABLE(of, gc08a3_of_match);
