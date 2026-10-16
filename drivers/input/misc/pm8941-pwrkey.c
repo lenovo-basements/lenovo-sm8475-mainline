@@ -224,6 +224,8 @@ static int pm8941_pwrkey_suspend(struct device *dev)
 {
 	struct pm8941_pwrkey *pwrkey = dev_get_drvdata(dev);
 
+	synchronize_irq(pwrkey->irq);
+
 	if (device_may_wakeup(dev))
 		enable_irq_wake(pwrkey->irq);
 
