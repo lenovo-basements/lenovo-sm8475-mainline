@@ -11,6 +11,7 @@
 #include <linux/soc/qcom/pdr.h>
 #include <linux/usb/typec_mux.h>
 #include <linux/gpio/consumer.h>
+#include <linux/usb/role.h>
 #include <linux/soc/qcom/pmic_glink.h>
 #include "ucsi.h"
 
@@ -64,6 +65,8 @@ struct pmic_glink_ucsi {
 	struct device *dev;
 
 	struct gpio_desc *port_orientation[PMIC_GLINK_MAX_PORTS];
+	struct gpio_desc *port_switch_gpio;
+	bool port_connected[PMIC_GLINK_MAX_PORTS];
 
 	struct pmic_glink_client *client;
 
@@ -208,6 +211,33 @@ static void pmic_glink_ucsi_connector_status(struct ucsi_connector *con)
 {
 	struct pmic_glink_ucsi *ucsi = ucsi_get_drvdata(con->ucsi);
 	int orientation;
+
+	if (con->num <= PMIC_GLINK_MAX_PORTS)
+		ucsi->port_connected[con->num - 1] = !!UCSI_CONSTAT(con, CONNECTED);
+
+	dev_info(ucsi->dev, "connector_status con=%d connected=%d status=0x%lx\n",
+		 con->num, !!UCSI_CONSTAT(con, CONNECTED), con->status[0]);
+
+	if (ucsi->port_switch_gpio) {
+		bool c1_connected = ucsi->port_connected[0];
+		bool c2_connected = ucsi->port_connected[1];
+		int target = (!c1_connected && c2_connected) ? 1 : 0;
+		struct usb_role_switch *role_sw = NULL;
+
+		dev_info(ucsi->dev, "switching port mux: c1=%d c2=%d -> target=%d\n",
+			 c1_connected, c2_connected, target);
+		gpiod_set_value_cansleep(ucsi->port_switch_gpio, target);
+
+		if (ucsi->ucsi && ucsi->ucsi->connector)
+			role_sw = ucsi->ucsi->connector[0].usb_role_sw;
+
+		if (role_sw) {
+			if (!c1_connected && c2_connected) {
+				dev_info(ucsi->dev, "driving role_sw to HOST for C2\n");
+				usb_role_switch_set_role(role_sw, USB_ROLE_HOST);
+			}
+		}
+	}
 
 	if (!UCSI_CONSTAT(con, CONNECTED)) {
 		typec_set_orientation(con->port, TYPEC_ORIENTATION_NONE);
@@ -358,9 +388,49 @@ static void pmic_glink_ucsi_pdr_notify(void *priv, int state)
 	schedule_work(&ucsi->register_work);
 }
 
+static ssize_t usb_port_mux_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	struct pmic_glink_ucsi *ucsi = dev_get_drvdata(dev);
+	int val = 0;
+
+	if (ucsi->port_switch_gpio)
+		val = gpiod_get_value_cansleep(ucsi->port_switch_gpio);
+
+	return sysfs_emit(buf, "%d\n", val);
+}
+
+static ssize_t usb_port_mux_store(struct device *dev, struct device_attribute *attr,
+				  const char *buf, size_t count)
+{
+	struct pmic_glink_ucsi *ucsi = dev_get_drvdata(dev);
+	int val;
+	int ret;
+
+	ret = kstrtoint(buf, 10, &val);
+	if (ret)
+		return ret;
+
+	if (ucsi->port_switch_gpio) {
+		struct usb_role_switch *role_sw = NULL;
+
+		gpiod_set_value_cansleep(ucsi->port_switch_gpio, !!val);
+		dev_info(dev, "usb_port_mux manually set to %d\n", !!val);
+
+		if (ucsi->ucsi && ucsi->ucsi->connector)
+			role_sw = ucsi->ucsi->connector[0].usb_role_sw;
+		if (role_sw && val)
+			usb_role_switch_set_role(role_sw, USB_ROLE_HOST);
+	}
+
+	return count;
+}
+static DEVICE_ATTR_RW(usb_port_mux);
+
 static void pmic_glink_ucsi_destroy(void *data)
 {
 	struct pmic_glink_ucsi *ucsi = data;
+
+	device_remove_file(ucsi->dev, &dev_attr_usb_port_mux);
 
 	/* Drain the work items before ucsi_destroy() frees the ucsi instance */
 	cancel_work_sync(&ucsi->notify_work);
@@ -426,6 +496,19 @@ static int pmic_glink_ucsi_probe(struct auxiliary_device *adev,
 		ucsi->ucsi->quirks = *(unsigned long *)match->data;
 
 	ucsi_set_drvdata(ucsi->ucsi, ucsi);
+
+	ucsi->port_switch_gpio = devm_gpiod_get_optional(dev->parent, "port-switch", GPIOD_OUT_LOW);
+	if (!ucsi->port_switch_gpio)
+		ucsi->port_switch_gpio = devm_gpiod_get_optional(dev, "port-switch", GPIOD_OUT_LOW);
+	if (IS_ERR(ucsi->port_switch_gpio))
+		return dev_err_probe(dev, PTR_ERR(ucsi->port_switch_gpio),
+				     "unable to acquire port-switch gpio\n");
+
+	dev_info(dev, "port-switch GPIO: %p\n", ucsi->port_switch_gpio);
+
+	ret = device_create_file(dev, &dev_attr_usb_port_mux);
+	if (ret)
+		dev_warn(dev, "failed to create usb_port_mux sysfs file: %d\n", ret);
 
 	device_for_each_child_node_scoped(dev, fwnode) {
 		struct gpio_desc *desc;

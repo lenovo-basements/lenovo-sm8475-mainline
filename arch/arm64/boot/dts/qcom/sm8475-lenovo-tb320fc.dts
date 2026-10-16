@@ -456,29 +456,15 @@
 &usb_1 {
 	status = "okay";
 	dr_mode = "otg";
-	role-switch-default-mode = "peripheral";
-	maximum-speed = "high-speed";
-	qcom,select-utmi-as-pipe-clk;
-	phys = <&usb_1_hsphy>;
-	phy-names = "usb2-phy";
 	usb-role-switch;
-	mux-states = <&usb_data_mux 0>, <&usb_data_mux 1>;
-	mux-state-names = "usb-device", "usb-host";
-	mux-settle-time-us = <50000>;
 };
 
 / {
-	usb_data_mux: mux-controller {
-		compatible = "gpio-mux";
-		#mux-state-cells = <1>;
-		mux-gpios = <&tlmm 88 GPIO_ACTIVE_HIGH>;
-		idle-state = <0>;
-	};
-
 	pmic-glink {
 		compatible = "qcom,sm8450-pmic-glink", "qcom,pmic-glink";
 		#address-cells = <1>;
 		#size-cells = <0>;
+		port-switch-gpios = <&tlmm 88 GPIO_ACTIVE_HIGH>;
 
 		connector@0 {
 			compatible = "usb-c-connector";
@@ -543,6 +529,7 @@
 	compatible = "qcom,sm8475-qmp-usb3-dp-phy";
 	vdda-phy-supply = <&vreg_l1b_0p912>;
 	vdda-pll-supply = <&vreg_l10c_1p2>;
+	power-domains = <&gcc USB30_PRIM_GDSC>;
 	status = "okay";
 };
 
