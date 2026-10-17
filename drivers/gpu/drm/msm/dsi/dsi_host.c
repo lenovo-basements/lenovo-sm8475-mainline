@@ -940,7 +940,7 @@ static void dsi_ctrl_enable(struct msm_dsi_host *msm_host,
 }
 
 static u32 dsi_dsc_slices_per_intf(struct msm_dsi_host *msm_host,
-				 bool is_bonded_dsi)
+				   bool is_bonded_dsi)
 {
 	u32 width = msm_host->mode->hdisplay;
 
@@ -951,7 +951,7 @@ static u32 dsi_dsc_slices_per_intf(struct msm_dsi_host *msm_host,
 }
 
 static void dsi_update_dsc_timing(struct msm_dsi_host *msm_host, bool is_cmd_mode,
-				bool is_bonded_dsi)
+				  bool is_bonded_dsi)
 {
 	struct drm_dsc_config *dsc = msm_host->dsc;
 	u32 reg, reg_ctrl, reg_ctrl2;
@@ -1095,7 +1095,7 @@ static int dsi_timing_setup(struct msm_dsi_host *msm_host, bool is_bonded_dsi)
 		}
 
 		hdisplay = DIV_ROUND_UP(msm_dsc_get_bytes_per_intf(dsc, hdisplay) * 8,
-				       bits_per_pclk);
+					bits_per_pclk);
 
 		h_total += hdisplay;
 		ha_end = ha_start + hdisplay;
