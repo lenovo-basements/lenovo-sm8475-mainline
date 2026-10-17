@@ -495,6 +495,8 @@ int msm_dsi_manager_connector_init(struct msm_dsi *msm_dsi,
 		return PTR_ERR(connector);
 	}
 
+	drm_connector_attach_vrr_capable_property(connector);
+
 	return 0;
 }
 
@@ -545,14 +547,14 @@ restore_host0:
 }
 
 bool msm_dsi_manager_cmd_xfer_trigger(int id, u32 dma_base, u32 len,
-				    bool need_sync)
+				      bool need_sync)
 {
 	struct msm_dsi *msm_dsi = dsi_mgr_get_dsi(id);
 	struct msm_dsi *msm_dsi0 = dsi_mgr_get_dsi(DSI_0);
 	struct mipi_dsi_host *host = msm_dsi->host;
 
 	/* Reads, including their return-size command, must stay on one link. */
-	if (need_sync && (id == DSI_0))
+	if (need_sync && id == DSI_0)
 		return false;
 
 	if (need_sync && msm_dsi0)
