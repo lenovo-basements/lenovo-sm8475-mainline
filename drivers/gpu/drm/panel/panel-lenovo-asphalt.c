@@ -402,6 +402,10 @@ static int asphalt_get_modes(struct drm_panel *panel,
 	connector->display_info.width_mm = 118;
 	connector->display_info.height_mm = 190;
 	connector->display_info.bpc = 8;
+	connector->display_info.monitor_range.min_vfreq = 48;
+	connector->display_info.monitor_range.max_vfreq = 144;
+
+	drm_connector_set_vrr_capable_property(connector, true);
 
 	return ARRAY_SIZE(asphalt_modes);
 }
