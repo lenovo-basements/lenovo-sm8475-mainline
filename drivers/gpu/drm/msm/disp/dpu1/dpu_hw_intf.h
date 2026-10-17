@@ -112,6 +112,12 @@ struct dpu_hw_intf_ops {
 
 	void (*program_intf_cmd_cfg)(struct dpu_hw_intf *intf,
 				     struct dpu_hw_intf_cmd_mode_cfg *cmd_mode_cfg);
+
+	int (*setup_avr)(struct dpu_hw_intf *intf,
+			 const struct dpu_hw_intf_timing_params *p,
+			 u32 default_fps, u32 min_fps);
+	void (*enable_avr)(struct dpu_hw_intf *intf, bool enable);
+	void (*trigger_avr)(struct dpu_hw_intf *intf);
 };
 
 struct dpu_hw_intf {
@@ -122,6 +128,8 @@ struct dpu_hw_intf {
 	const struct dpu_intf_cfg *cap;
 
 	const struct dpu_mdss_version *mdss_ver;
+
+	bool avr_enabled;
 
 	/* ops */
 	struct dpu_hw_intf_ops ops;
