@@ -34,11 +34,13 @@ struct backlight_device;
 struct dentry;
 struct device_node;
 struct drm_connector;
+struct drm_display_mode;
 struct drm_panel_follower;
 struct drm_panel;
 struct display_timing;
 
 enum drm_panel_orientation;
+enum drm_mode_status;
 
 /**
  * struct drm_panel_funcs - perform operations on a given panel
@@ -117,6 +119,35 @@ struct drm_panel_funcs {
 	 */
 	int (*get_modes)(struct drm_panel *panel,
 			 struct drm_connector *connector);
+
+	/**
+	 * @mode_valid:
+	 *
+	 * Validate a mode against the panel's fixed hardware constraints.
+	 * This callback must not change panel state or access hardware. It
+	 * returns MODE_OK for a supported mode or the reason for rejecting it.
+	 *
+	 * This function is optional. All modes are accepted if it is absent.
+	 */
+	enum drm_mode_status (*mode_valid)(struct drm_panel *panel,
+					   const struct drm_display_mode *mode);
+
+	/**
+	 * @mode_set:
+	 *
+	 * Cache the mode selected for the next prepare and enable sequence.
+	 * The mode and adjusted_mode pointers are only valid during this call;
+	 * drivers must copy any mode information they retain.
+	 *
+	 * This callback must not access hardware. It does not implement a live
+	 * or seamless mode change. Hardware configuration belongs in prepare()
+	 * and enable(), after the display controller has configured its mode.
+	 *
+	 * This function is optional.
+	 */
+	void (*mode_set)(struct drm_panel *panel,
+			 const struct drm_display_mode *mode,
+			 const struct drm_display_mode *adjusted_mode);
 
 	/**
 	 * @get_orientation:
@@ -334,6 +365,12 @@ void drm_panel_enable(struct drm_panel *panel);
 void drm_panel_disable(struct drm_panel *panel);
 
 int drm_panel_get_modes(struct drm_panel *panel, struct drm_connector *connector);
+
+enum drm_mode_status drm_panel_mode_valid(struct drm_panel *panel,
+					  const struct drm_display_mode *mode);
+void drm_panel_mode_set(struct drm_panel *panel,
+			const struct drm_display_mode *mode,
+			const struct drm_display_mode *adjusted_mode);
 
 #if defined(CONFIG_OF) && defined(CONFIG_DRM_PANEL)
 struct drm_panel *of_drm_find_panel(const struct device_node *np);
