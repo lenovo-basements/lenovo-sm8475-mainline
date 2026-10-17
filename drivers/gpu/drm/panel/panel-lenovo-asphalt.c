@@ -25,7 +25,7 @@
 
 static unsigned int refresh_rate = 144;
 module_param(refresh_rate, uint, 0444);
-MODULE_PARM_DESC(refresh_rate, "Fixed panel refresh rate: 144 (default) or 120 Hz");
+MODULE_PARM_DESC(refresh_rate, "Preferred panel refresh rate: 144 (default), 120, 60 or 30 Hz");
 
 enum asphalt_supply {
 	ASPHALT_VDDIO,
@@ -41,10 +41,32 @@ struct asphalt_panel {
 	struct gpio_desc *reset;
 	struct regulator_bulk_data supplies[ASPHALT_NUM_SUPPLIES];
 	enum drm_panel_orientation orientation;
+	unsigned int current_refresh_rate;
 };
 
 static const struct drm_display_mode asphalt_modes[] = {
 	{
+		/* Lower stock rates extend VFP while keeping the 120 Hz link clock. */
+		.clock = 691524,
+		.hdisplay = 1600,
+		.hsync_start = 1600 + 2 * 137,
+		.hsync_end = 1600 + 2 * (137 + 20),
+		.htotal = 2 * (800 + 137 + 20 + 54),
+		.vdisplay = 2560,
+		.vsync_start = 2560 + 8580,
+		.vsync_end = 2560 + 8580 + 4,
+		.vtotal = 2560 + 8580 + 4 + 256,
+	}, {
+		.clock = 691524,
+		.hdisplay = 1600,
+		.hsync_start = 1600 + 2 * 137,
+		.hsync_end = 1600 + 2 * (137 + 20),
+		.htotal = 2 * (800 + 137 + 20 + 54),
+		.vdisplay = 2560,
+		.vsync_start = 2560 + 2880,
+		.vsync_end = 2560 + 2880 + 4,
+		.vtotal = 2560 + 2880 + 4 + 256,
+	}, {
 		.clock = 691524,
 		.hdisplay = 1600,
 		.hsync_start = 1600 + 2 * 137,
@@ -78,6 +100,57 @@ static const struct drm_display_mode asphalt_modes[] = {
 static struct asphalt_panel *to_asphalt_panel(struct drm_panel *panel)
 {
 	return container_of(panel, struct asphalt_panel, panel);
+}
+
+static int asphalt_init_refresh_rate(struct asphalt_panel *ctx)
+{
+	if (refresh_rate != 30 && refresh_rate != 60 &&
+	    refresh_rate != 120 && refresh_rate != 144)
+		return -EINVAL;
+
+	/* mode_set() supplies the actual selection before the first prepare(). */
+	ctx->current_refresh_rate = 144;
+
+	return 0;
+}
+
+static const struct drm_display_mode *
+asphalt_find_mode(const struct drm_display_mode *mode)
+{
+	unsigned int i;
+
+	if (!mode)
+		return NULL;
+
+	for (i = 0; i < ARRAY_SIZE(asphalt_modes); i++) {
+		/* drm_mode_equal() alone permits clocks with equal picosecond periods. */
+		if (mode->clock == asphalt_modes[i].clock &&
+		    drm_mode_equal(mode, &asphalt_modes[i]))
+			return &asphalt_modes[i];
+	}
+
+	return NULL;
+}
+
+static enum drm_mode_status asphalt_mode_valid(struct drm_panel *panel,
+					       const struct drm_display_mode *mode)
+{
+	return asphalt_find_mode(mode) ? MODE_OK : MODE_BAD;
+}
+
+static void asphalt_mode_set(struct drm_panel *panel,
+			     const struct drm_display_mode *mode,
+			     const struct drm_display_mode *adjusted_mode)
+{
+	struct asphalt_panel *ctx = to_asphalt_panel(panel);
+	const struct drm_display_mode *supported_mode;
+
+	supported_mode = asphalt_find_mode(adjusted_mode);
+	if (WARN_ON(!supported_mode))
+		return;
+
+	/* Ordinary modesets select the cold-start sequence before prepare(). */
+	ctx->current_refresh_rate = drm_mode_vrefresh(supported_mode);
 }
 
 /*
@@ -237,7 +310,7 @@ static int asphalt_prepare(struct drm_panel *panel)
 	if (ret)
 		goto power_off;
 
-	if (refresh_rate == 144) {
+	if (ctx->current_refresh_rate == 144) {
 		ret = asphalt_power_on_144(ctx);
 		if (ret) {
 			dev_err(panel->dev, "144 Hz power-on commands failed: %d\n", ret);
@@ -264,7 +337,7 @@ static int asphalt_enable(struct drm_panel *panel)
 	struct asphalt_panel *ctx = to_asphalt_panel(panel);
 	int ret;
 
-	if (refresh_rate != 144)
+	if (ctx->current_refresh_rate != 144)
 		return 0;
 
 	/* Allow a frame interval before releasing the panel touch gate. */
@@ -313,19 +386,24 @@ static int asphalt_get_modes(struct drm_panel *panel,
 			     struct drm_connector *connector)
 {
 	struct drm_display_mode *mode;
+	unsigned int i;
 
-	mode = drm_mode_duplicate(connector->dev, &asphalt_modes[refresh_rate == 144]);
-	if (!mode)
-		return -ENOMEM;
+	for (i = 0; i < ARRAY_SIZE(asphalt_modes); i++) {
+		mode = drm_mode_duplicate(connector->dev, &asphalt_modes[i]);
+		if (!mode)
+			return i ?: -ENOMEM;
 
-	mode->type = DRM_MODE_TYPE_DRIVER | DRM_MODE_TYPE_PREFERRED;
-	drm_mode_set_name(mode);
-	drm_mode_probed_add(connector, mode);
+		mode->type = DRM_MODE_TYPE_DRIVER;
+		if (drm_mode_vrefresh(mode) == (int)refresh_rate)
+			mode->type |= DRM_MODE_TYPE_PREFERRED;
+		drm_mode_set_name(mode);
+		drm_mode_probed_add(connector, mode);
+	}
 	connector->display_info.width_mm = 118;
 	connector->display_info.height_mm = 190;
 	connector->display_info.bpc = 8;
 
-	return 1;
+	return ARRAY_SIZE(asphalt_modes);
 }
 
 static enum drm_panel_orientation asphalt_get_orientation(struct drm_panel *panel)
@@ -338,6 +416,8 @@ static const struct drm_panel_funcs asphalt_panel_funcs = {
 	.enable = asphalt_enable,
 	.unprepare = asphalt_unprepare,
 	.get_modes = asphalt_get_modes,
+	.mode_valid = asphalt_mode_valid,
+	.mode_set = asphalt_mode_set,
 	.get_orientation = asphalt_get_orientation,
 };
 
@@ -354,13 +434,13 @@ static int asphalt_probe(struct mipi_dsi_device *dsi)
 	unsigned int i;
 	int ret;
 
-	if (refresh_rate != 120 && refresh_rate != 144)
-		return dev_err_probe(dev, -EINVAL, "refresh_rate must be 120 or 144\n");
-
 	ctx = devm_drm_panel_alloc(dev, struct asphalt_panel, panel,
 				   &asphalt_panel_funcs, DRM_MODE_CONNECTOR_DSI);
 	if (IS_ERR(ctx))
 		return PTR_ERR(ctx);
+	ret = asphalt_init_refresh_rate(ctx);
+	if (ret)
+		return dev_err_probe(dev, ret, "refresh_rate must be 30, 60, 120 or 144\n");
 
 	ctx->supplies[ASPHALT_VDDIO].supply = "vddio";
 	ctx->supplies[ASPHALT_VDDIO].init_load_uA = 200000;
