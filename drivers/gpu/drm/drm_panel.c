@@ -206,6 +206,25 @@ static int panel_bridge_get_modes(struct drm_bridge *bridge,
 	return drm_panel_get_modes(panel, connector);
 }
 
+static enum drm_mode_status
+panel_bridge_mode_valid(struct drm_bridge *bridge,
+			const struct drm_display_info *info,
+			const struct drm_display_mode *mode)
+{
+	struct drm_panel *panel = drm_bridge_to_panel(bridge);
+
+	return drm_panel_mode_valid(panel, mode);
+}
+
+static void panel_bridge_mode_set(struct drm_bridge *bridge,
+				  const struct drm_display_mode *mode,
+				  const struct drm_display_mode *adjusted_mode)
+{
+	struct drm_panel *panel = drm_bridge_to_panel(bridge);
+
+	drm_panel_mode_set(panel, mode, adjusted_mode);
+}
+
 static void panel_bridge_debugfs_init(struct drm_bridge *bridge,
 				      struct dentry *root)
 {
@@ -224,6 +243,8 @@ static const struct drm_bridge_funcs panel_bridge_bridge_funcs = {
 	.atomic_disable = panel_bridge_atomic_disable,
 	.atomic_post_disable = panel_bridge_atomic_post_disable,
 	.get_modes = panel_bridge_get_modes,
+	.mode_valid = panel_bridge_mode_valid,
+	.mode_set = panel_bridge_mode_set,
 	.atomic_create_state = drm_atomic_helper_bridge_create_state,
 	.atomic_duplicate_state = drm_atomic_helper_bridge_duplicate_state,
 	.atomic_destroy_state = drm_atomic_helper_bridge_destroy_state,
@@ -889,6 +910,45 @@ int drm_panel_get_modes(struct drm_panel *panel,
 	return 0;
 }
 EXPORT_SYMBOL(drm_panel_get_modes);
+
+/**
+ * drm_panel_mode_valid - validate a mode against panel constraints
+ * @panel: DRM panel
+ * @mode: display mode to validate
+ *
+ * This function does not change panel state or access hardware.
+ *
+ * Return: MODE_OK if the panel accepts the mode or has no mode_valid callback,
+ * or a mode status explaining why the mode is unsupported.
+ */
+enum drm_mode_status drm_panel_mode_valid(struct drm_panel *panel,
+					  const struct drm_display_mode *mode)
+{
+	if (panel && panel->funcs && panel->funcs->mode_valid)
+		return panel->funcs->mode_valid(panel, mode);
+
+	return MODE_OK;
+}
+EXPORT_SYMBOL(drm_panel_mode_valid);
+
+/**
+ * drm_panel_mode_set - cache the mode selected for a panel
+ * @panel: DRM panel
+ * @mode: selected display mode
+ * @adjusted_mode: display controller's adjusted mode
+ *
+ * Cache mode information before the next prepare and enable sequence. The
+ * callback must copy information it retains and must not access hardware.
+ * Panels without a mode_set callback are unaffected.
+ */
+void drm_panel_mode_set(struct drm_panel *panel,
+			const struct drm_display_mode *mode,
+			const struct drm_display_mode *adjusted_mode)
+{
+	if (panel && panel->funcs && panel->funcs->mode_set)
+		panel->funcs->mode_set(panel, mode, adjusted_mode);
+}
+EXPORT_SYMBOL(drm_panel_mode_set);
 
 /**
  * drm_panel_get - Acquire a panel reference
