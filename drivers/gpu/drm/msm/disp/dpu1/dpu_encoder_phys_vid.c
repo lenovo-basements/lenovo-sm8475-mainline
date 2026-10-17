@@ -15,6 +15,7 @@
 #include <linux/of.h>
 
 #include <drm/display/drm_dsc_helper.h>
+#include <drm/drm_connector.h>
 #include <drm/drm_managed.h>
 
 #define DPU_DEBUG_VIDENC(e, fmt, ...) DPU_DEBUG("enc%d intf%d " fmt, \
@@ -134,7 +135,7 @@ static void drm_mode_to_intf_timing_params(
 		       dpu_encoder_get_dsc_config(phys_enc->parent);
 		timing->dce_bytes_per_line = msm_dsc_get_bytes_per_intf(dsc, timing->width);
 		timing->width = DIV_ROUND_UP(timing->dce_bytes_per_line * 8,
-					   dsc->bits_per_component * 3);
+					     dsc->bits_per_component * 3);
 		timing->xres = timing->width;
 	}
 }
@@ -185,9 +186,8 @@ static bool dpu_encoder_phys_vid_tb320fc_split(struct dpu_encoder_phys *phys_enc
 		phys_enc->hw_pp->idx == PINGPONG_1);
 }
 
-static bool dpu_encoder_phys_vid_tb320fc_prefetch(
-		struct dpu_encoder_phys *phys_enc,
-		const struct dpu_hw_intf_timing_params *timing)
+static bool dpu_encoder_phys_vid_tb320fc_prefetch(struct dpu_encoder_phys *phys_enc,
+						  const struct dpu_hw_intf_timing_params *timing)
 {
 	return dpu_encoder_phys_vid_tb320fc_split(phys_enc) &&
 	       timing->v_back_porch + timing->vsync_pulse_width >=
@@ -295,6 +295,34 @@ static void programmable_fetch_config(struct dpu_encoder_phys *phys_enc,
 	spin_unlock_irqrestore(phys_enc->enc_spinlock, lock_flags);
 }
 
+static bool dpu_encoder_phys_vid_setup_avr(struct dpu_encoder_phys *phys_enc,
+					   const struct dpu_hw_intf_timing_params *timing)
+{
+	struct dpu_hw_intf *intf = phys_enc->hw_intf;
+	u32 min_fps = phys_enc->vrr_min_refresh;
+	u32 max_fps = phys_enc->vrr_max_refresh;
+	u32 default_fps = drm_mode_vrefresh(&phys_enc->cached_mode);
+	int ret;
+
+	if (!intf->ops.setup_avr || !min_fps || min_fps >= max_fps ||
+	    default_fps <= min_fps || default_fps > max_fps)
+		return false;
+
+	ret = intf->ops.setup_avr(intf, timing, default_fps, min_fps);
+	if (ret)
+		DPU_ERROR_VIDENC(phys_enc, "AVR timing setup failed: %d\n", ret);
+
+	return !ret;
+}
+
+static bool dpu_encoder_phys_vid_vrr_enabled(struct dpu_encoder_phys *phys_enc)
+{
+	struct drm_encoder *encoder = phys_enc->parent;
+
+	return phys_enc->avr_configured && encoder && encoder->crtc &&
+	       encoder->crtc->state && encoder->crtc->state->vrr_enabled;
+}
+
 static void dpu_encoder_phys_vid_setup_timing_engine(
 		struct dpu_encoder_phys *phys_enc)
 {
@@ -305,6 +333,7 @@ static void dpu_encoder_phys_vid_setup_timing_engine(
 	unsigned long lock_flags;
 	struct dpu_hw_intf_cfg intf_cfg = { 0 };
 
+	phys_enc->avr_configured = false;
 	drm_mode_init(&mode, &phys_enc->cached_mode);
 
 	if (!phys_enc->hw_ctl->ops.setup_intf_cfg) {
@@ -371,6 +400,9 @@ static void dpu_encoder_phys_vid_setup_timing_engine(
 	spin_unlock_irqrestore(phys_enc->enc_spinlock, lock_flags);
 
 	programmable_fetch_config(phys_enc, &timing_params);
+
+	phys_enc->avr_configured =
+		dpu_encoder_phys_vid_setup_avr(phys_enc, &timing_params);
 }
 
 static void dpu_encoder_phys_vid_vblank_irq(void *arg)
@@ -429,6 +461,12 @@ static void dpu_encoder_phys_vid_atomic_mode_set(
 		struct drm_crtc_state *crtc_state,
 		struct drm_connector_state *conn_state)
 {
+	const struct drm_monitor_range_info *range =
+		&conn_state->connector->display_info.monitor_range;
+
+	phys_enc->avr_configured = false;
+	phys_enc->vrr_min_refresh = range->min_vfreq;
+	phys_enc->vrr_max_refresh = range->max_vfreq;
 	phys_enc->irq[INTR_IDX_VSYNC] = phys_enc->hw_intf->cap->intr_vsync;
 
 	phys_enc->irq[INTR_IDX_UNDERRUN] = phys_enc->hw_intf->cap->intr_underrun;
@@ -596,8 +634,14 @@ static void dpu_encoder_phys_vid_prepare_for_kickoff(
 	struct dpu_hw_ctl *ctl;
 	int rc;
 	struct drm_encoder *drm_enc;
+	bool vrr_enabled = false;
 
 	drm_enc = phys_enc->parent;
+
+	vrr_enabled = dpu_encoder_phys_vid_vrr_enabled(phys_enc);
+
+	if (phys_enc->hw_intf && phys_enc->hw_intf->ops.enable_avr)
+		phys_enc->hw_intf->ops.enable_avr(phys_enc->hw_intf, vrr_enabled);
 
 	ctl = phys_enc->hw_ctl;
 	if (!ctl->ops.wait_reset_status)
@@ -641,6 +685,9 @@ static void dpu_encoder_phys_vid_disable(struct dpu_encoder_phys *phys_enc)
 		DPU_ERROR("already disabled\n");
 		return;
 	}
+
+	if (phys_enc->hw_intf && phys_enc->hw_intf->ops.enable_avr)
+		phys_enc->hw_intf->ops.enable_avr(phys_enc->hw_intf, false);
 
 	spin_lock_irqsave(phys_enc->enc_spinlock, lock_flags);
 	phys_enc->hw_intf->ops.enable_timing(phys_enc->hw_intf, 0);
@@ -712,6 +759,12 @@ static void dpu_encoder_phys_vid_handle_post_kickoff(
 			phys_enc->hw_intf->ops.enable_timing(phys_enc->hw_intf, 1);
 		spin_unlock_irqrestore(phys_enc->enc_spinlock, lock_flags);
 		phys_enc->enable_state = DPU_ENC_ENABLED;
+	}
+
+	if (phys_enc->enable_state == DPU_ENC_ENABLED &&
+	    dpu_encoder_phys_vid_vrr_enabled(phys_enc)) {
+		if (phys_enc->hw_intf && phys_enc->hw_intf->ops.trigger_avr)
+			phys_enc->hw_intf->ops.trigger_avr(phys_enc->hw_intf);
 	}
 }
 

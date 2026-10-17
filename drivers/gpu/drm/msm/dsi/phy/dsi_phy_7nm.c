@@ -593,10 +593,11 @@ static void dsi_7nm_phy_post_link_enable(struct msm_dsi_phy *phy)
 	    !(phy->cfg->quirks & DSI_PHY_7NM_QUIRK_V4_3_2))
 		return;
 
+	/* Toggle the RBUF reset: the 0 must reach the PHY before the 1. */
 	writel(0, phy->base + REG_DSI_7nm_PHY_CMN_RBUF_CTRL);
-	wmb();
+	wmb(); /* order the RBUF reset assert before the release */
 	writel(1, phy->base + REG_DSI_7nm_PHY_CMN_RBUF_CTRL);
-	wmb();
+	wmb(); /* make sure the release lands before the link is used */
 }
 
 static void dsi_pll_7nm_vco_unprepare(struct clk_hw *hw)
