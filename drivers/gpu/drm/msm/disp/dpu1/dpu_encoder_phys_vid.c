@@ -371,6 +371,15 @@ static void dpu_encoder_phys_vid_setup_timing_engine(
 	spin_unlock_irqrestore(phys_enc->enc_spinlock, lock_flags);
 
 	programmable_fetch_config(phys_enc, &timing_params);
+
+	if (phys_enc->hw_intf->ops.setup_avr) {
+		u32 default_fps = drm_mode_vrefresh(&phys_enc->cached_mode);
+		u32 min_fps = 48;
+
+		phys_enc->hw_intf->ops.setup_avr(phys_enc->hw_intf,
+						 &timing_params,
+						 default_fps, min_fps);
+	}
 }
 
 static void dpu_encoder_phys_vid_vblank_irq(void *arg)
@@ -596,8 +605,15 @@ static void dpu_encoder_phys_vid_prepare_for_kickoff(
 	struct dpu_hw_ctl *ctl;
 	int rc;
 	struct drm_encoder *drm_enc;
+	bool vrr_enabled = false;
 
 	drm_enc = phys_enc->parent;
+
+	if (drm_enc && drm_enc->crtc && drm_enc->crtc->state)
+		vrr_enabled = drm_enc->crtc->state->vrr_enabled;
+
+	if (phys_enc->hw_intf && phys_enc->hw_intf->ops.enable_avr)
+		phys_enc->hw_intf->ops.enable_avr(phys_enc->hw_intf, vrr_enabled);
 
 	ctl = phys_enc->hw_ctl;
 	if (!ctl->ops.wait_reset_status)
@@ -641,6 +657,9 @@ static void dpu_encoder_phys_vid_disable(struct dpu_encoder_phys *phys_enc)
 		DPU_ERROR("already disabled\n");
 		return;
 	}
+
+	if (phys_enc->hw_intf && phys_enc->hw_intf->ops.enable_avr)
+		phys_enc->hw_intf->ops.enable_avr(phys_enc->hw_intf, false);
 
 	spin_lock_irqsave(phys_enc->enc_spinlock, lock_flags);
 	phys_enc->hw_intf->ops.enable_timing(phys_enc->hw_intf, 0);
@@ -712,6 +731,14 @@ static void dpu_encoder_phys_vid_handle_post_kickoff(
 			phys_enc->hw_intf->ops.enable_timing(phys_enc->hw_intf, 1);
 		spin_unlock_irqrestore(phys_enc->enc_spinlock, lock_flags);
 		phys_enc->enable_state = DPU_ENC_ENABLED;
+	}
+
+	if (phys_enc->enable_state == DPU_ENC_ENABLED &&
+	    phys_enc->parent && phys_enc->parent->crtc &&
+	    phys_enc->parent->crtc->state &&
+	    phys_enc->parent->crtc->state->vrr_enabled) {
+		if (phys_enc->hw_intf && phys_enc->hw_intf->ops.trigger_avr)
+			phys_enc->hw_intf->ops.trigger_avr(phys_enc->hw_intf);
 	}
 }
 

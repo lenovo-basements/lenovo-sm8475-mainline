@@ -495,6 +495,8 @@ int msm_dsi_manager_connector_init(struct msm_dsi *msm_dsi,
 		return PTR_ERR(connector);
 	}
 
+	drm_connector_attach_vrr_capable_property(connector);
+
 	return 0;
 }
 
