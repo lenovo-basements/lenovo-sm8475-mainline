@@ -19,8 +19,7 @@
 #include <media/v4l2-device.h>
 #include <media/v4l2-fwnode.h>
 
-#define S5K4H7_LINK_FREQ_336MHZ		(336ULL * HZ_PER_MHZ)
-#define S5K4H7_LINK_FREQ_207MHZ		(207ULL * HZ_PER_MHZ)
+#define S5K4H7_LINK_FREQ_340MHZ		(340ULL * HZ_PER_MHZ)
 #define S5K4H7_MCLK_FREQ_24MHZ		(24 * HZ_PER_MHZ)
 #define S5K4H7_DATA_LANES		4
 
@@ -66,15 +65,14 @@
 #define to_s5k4h7(_sd)			container_of(_sd, struct s5k4h7, sd)
 
 static const s64 s5k4h7_link_freq_menu[] = {
-	S5K4H7_LINK_FREQ_336MHZ,
-	S5K4H7_LINK_FREQ_207MHZ,
+	S5K4H7_LINK_FREQ_340MHZ,
 };
 
 static const u32 s5k4h7_mbus_formats[] = {
-	MEDIA_BUS_FMT_SRGGB10_1X10,
 	MEDIA_BUS_FMT_SGRBG10_1X10,
-	MEDIA_BUS_FMT_SGBRG10_1X10,
+	MEDIA_BUS_FMT_SRGGB10_1X10,
 	MEDIA_BUS_FMT_SBGGR10_1X10,
+	MEDIA_BUS_FMT_SGBRG10_1X10,
 };
 
 struct s5k4h7_reg_list {
@@ -130,30 +128,34 @@ struct s5k4h7 {
 	const struct s5k4h7_mode *mode;
 };
 
-/* S5K4H7 Global Init Register Sequence */
+/* Qtech S5K4H7 module initialization, recovered from stock sensor data. */
 static const struct cci_reg_sequence s5k4h7_global_setting[] = {
-	{ CCI_REG8(0x0a02), 0x01 },
+	{ CCI_REG8(0x0100), 0x00 },
+	{ CCI_REG8(0x0000), 0x12 },
+	{ CCI_REG8(0x0000), 0x48 },
+	{ CCI_REG8(0x0a02), 0x15 },
+	{ CCI_REG8(0x0100), 0x00 },
 	{ CCI_REG8(0x0b05), 0x01 },
 	{ CCI_REG8(0x3074), 0x06 },
 	{ CCI_REG8(0x3075), 0x2f },
 	{ CCI_REG8(0x308a), 0x20 },
 	{ CCI_REG8(0x308b), 0x08 },
-	{ CCI_REG8(0x308c), 0x05 },
+	{ CCI_REG8(0x308c), 0x0b },
 	{ CCI_REG8(0x3081), 0x07 },
 	{ CCI_REG8(0x307b), 0x85 },
 	{ CCI_REG8(0x307a), 0x0a },
 	{ CCI_REG8(0x3079), 0x0a },
 	{ CCI_REG8(0x306e), 0x71 },
 	{ CCI_REG8(0x306f), 0x28 },
-	{ CCI_REG8(0x301f), 0x9a },
-	{ CCI_REG8(0x306b), 0x1f },
-	{ CCI_REG8(0x3091), 0x79 },
-	{ CCI_REG8(0x30c4), 0xff },
-	{ CCI_REG8(0x3200), 0x3f },
-	{ CCI_REG8(0x306a), 0x16 },
+	{ CCI_REG8(0x301f), 0x20 },
+	{ CCI_REG8(0x306b), 0x9a },
+	{ CCI_REG8(0x3091), 0x1f },
+	{ CCI_REG8(0x30c4), 0x06 },
+	{ CCI_REG8(0x3200), 0x09 },
+	{ CCI_REG8(0x306a), 0x79 },
 	{ CCI_REG8(0x30b0), 0xff },
-	{ CCI_REG8(0x306d), 0x87 },
-	{ CCI_REG8(0x3080), 0x7f },
+	{ CCI_REG8(0x306d), 0x08 },
+	{ CCI_REG8(0x3080), 0x00 },
 	{ CCI_REG8(0x3929), 0x3f },
 	{ CCI_REG8(0x3084), 0x16 },
 	{ CCI_REG8(0x3070), 0x0f },
@@ -166,53 +168,77 @@ static const struct cci_reg_sequence s5k4h7_global_setting[] = {
 	{ CCI_REG8(0x3c09), 0xff },
 	{ CCI_REG8(0x3c31), 0xff },
 	{ CCI_REG8(0x3c32), 0xff },
+	{ CCI_REG8(0x3400), 0x00 },
+	{ CCI_REG8(0x0b00), 0x01 },
+	{ CCI_REG8(0x3931), 0x02 },
+	{ CCI_REG8(0x392f), 0x01 },
+	{ CCI_REG8(0x3930), 0x80 },
+	{ CCI_REG8(0x3932), 0x88 },
 };
 
 /* 3264x2448 @ 30fps Full Resolution Mode */
 static const struct cci_reg_sequence s5k4h7_3264x2448_regs[] = {
-	{ S5K4H7_REG_X_ADDR_START, 0x0000 },
-	{ S5K4H7_REG_Y_ADDR_START, 0x0000 },
-	{ S5K4H7_REG_X_ADDR_END, 3263 },
-	{ S5K4H7_REG_Y_ADDR_END, 2447 },
-	{ S5K4H7_REG_X_OUTPUT_SIZE, 3264 },
-	{ S5K4H7_REG_Y_OUTPUT_SIZE, 2448 },
-	{ S5K4H7_REG_HTS, 3536 },
-	{ S5K4H7_REG_VTS, 2496 },
-};
-
-/* 1632x1224 @ 30fps Binned Mode */
-static const struct cci_reg_sequence s5k4h7_1632x1224_regs[] = {
-	{ S5K4H7_REG_X_ADDR_START, 0x0000 },
-	{ S5K4H7_REG_Y_ADDR_START, 0x0000 },
-	{ S5K4H7_REG_X_ADDR_END, 3263 },
-	{ S5K4H7_REG_Y_ADDR_END, 2447 },
-	{ S5K4H7_REG_X_OUTPUT_SIZE, 1632 },
-	{ S5K4H7_REG_Y_OUTPUT_SIZE, 1224 },
-	{ S5K4H7_REG_HTS, 3536 },
-	{ S5K4H7_REG_VTS, 2496 },
+	{ CCI_REG8(0x0100), 0x00 },
+	{ CCI_REG8(0x0136), 0x18 },
+	{ CCI_REG8(0x0137), 0x00 },
+	{ CCI_REG8(0x0305), 0x06 },
+	{ CCI_REG8(0x0306), 0x00 },
+	{ CCI_REG8(0x0307), 0x8c },
+	{ CCI_REG8(0x030d), 0x06 },
+	{ CCI_REG8(0x030e), 0x00 },
+	{ CCI_REG8(0x030f), 0xaa },
+	{ CCI_REG8(0x3c1f), 0x00 },
+	{ CCI_REG8(0x3c17), 0x00 },
+	{ CCI_REG8(0x3c1c), 0x05 },
+	{ CCI_REG8(0x3c1d), 0x15 },
+	{ CCI_REG8(0x0301), 0x04 },
+	{ CCI_REG8(0x0820), 0x02 },
+	{ CCI_REG8(0x0821), 0xa8 },
+	{ CCI_REG8(0x0822), 0x00 },
+	{ CCI_REG8(0x0823), 0x00 },
+	{ CCI_REG8(0x0112), 0x0a },
+	{ CCI_REG8(0x0113), 0x0a },
+	{ CCI_REG8(0x0114), 0x03 },
+	{ CCI_REG8(0x3906), 0x04 },
+	{ CCI_REG8(0x0344), 0x00 },
+	{ CCI_REG8(0x0345), 0x08 },
+	{ CCI_REG8(0x0346), 0x00 },
+	{ CCI_REG8(0x0347), 0x08 },
+	{ CCI_REG8(0x0348), 0x0c },
+	{ CCI_REG8(0x0349), 0xc7 },
+	{ CCI_REG8(0x034a), 0x09 },
+	{ CCI_REG8(0x034b), 0x97 },
+	{ CCI_REG8(0x034c), 0x0c },
+	{ CCI_REG8(0x034d), 0xc0 },
+	{ CCI_REG8(0x034e), 0x09 },
+	{ CCI_REG8(0x034f), 0x90 },
+	{ CCI_REG8(0x0900), 0x00 },
+	{ CCI_REG8(0x0901), 0x00 },
+	{ CCI_REG8(0x0381), 0x01 },
+	{ CCI_REG8(0x0383), 0x01 },
+	{ CCI_REG8(0x0385), 0x01 },
+	{ CCI_REG8(0x0387), 0x01 },
+	{ CCI_REG8(0x0101), 0x00 },
+	{ CCI_REG8(0x0340), 0x09 },
+	{ CCI_REG8(0x0341), 0xe2 },
+	{ CCI_REG8(0x0342), 0x0e },
+	{ CCI_REG8(0x0343), 0x68 },
+	{ CCI_REG8(0x0200), 0x0d },
+	{ CCI_REG8(0x0201), 0xd8 },
+	{ CCI_REG8(0x0202), 0x00 },
+	{ CCI_REG8(0x0203), 0x02 },
 };
 
 static const struct s5k4h7_mode s5k4h7_supported_modes[] = {
 	{
 		.width = 3264,
 		.height = 2448,
-		.hts = 3536,
-		.vts = 2496,
+		.hts = 3688,
+		.vts = 2530,
 		.exposure = 2000,
 		.reg_list = {
 			.regs = s5k4h7_3264x2448_regs,
 			.num_regs = ARRAY_SIZE(s5k4h7_3264x2448_regs),
-		},
-	},
-	{
-		.width = 1632,
-		.height = 1224,
-		.hts = 3536,
-		.vts = 2496,
-		.exposure = 2000,
-		.reg_list = {
-			.regs = s5k4h7_1632x1224_regs,
-			.num_regs = ARRAY_SIZE(s5k4h7_1632x1224_regs),
 		},
 	},
 };
@@ -306,8 +332,8 @@ static int s5k4h7_init_controls(struct s5k4h7 *s5k4h7)
 	if (s5k4h7->link_freq)
 		s5k4h7->link_freq->flags |= V4L2_CTRL_FLAG_READ_ONLY;
 
-	/* Pixel rate: 336MHz * 2 * 4 lanes / 10 bpp = 268.8 Mpix/s */
-	pixel_rate_val = 268800000ULL;
+	/* Stock mode: 680 Mbps per lane, four lanes, RAW10. */
+	pixel_rate_val = 272000000ULL;
 	s5k4h7->pixel_rate = v4l2_ctrl_new_std(ctrl_hdlr, &s5k4h7_ctrl_ops,
 					       V4L2_CID_PIXEL_RATE,
 					       pixel_rate_val, pixel_rate_val, 1,
@@ -342,6 +368,10 @@ static int s5k4h7_init_controls(struct s5k4h7 *s5k4h7)
 					  V4L2_CID_HFLIP, 0, 1, 1, 0);
 	s5k4h7->vflip = v4l2_ctrl_new_std(ctrl_hdlr, &s5k4h7_ctrl_ops,
 					  V4L2_CID_VFLIP, 0, 1, 1, 0);
+	if (s5k4h7->hflip)
+		s5k4h7->hflip->flags |= V4L2_CTRL_FLAG_MODIFY_LAYOUT;
+	if (s5k4h7->vflip)
+		s5k4h7->vflip->flags |= V4L2_CTRL_FLAG_MODIFY_LAYOUT;
 
 	v4l2_ctrl_new_std_menu_items(ctrl_hdlr, &s5k4h7_ctrl_ops,
 				     V4L2_CID_TEST_PATTERN,
@@ -400,13 +430,21 @@ static int s5k4h7_enable_streams(struct v4l2_subdev *sd,
 	if (ret)
 		goto error;
 
-	/* Start Streaming */
-	ret = cci_write(s5k4h7->regmap, S5K4H7_REG_CTRL_MODE,
-			S5K4H7_MODE_STREAMING |
+	/* Keep the sensor orientation consistent with the Bayer format. */
+	ret = cci_write(s5k4h7->regmap, S5K4H7_REG_ORIENTATION,
 			(s5k4h7->vflip->val ? S5K4H7_VFLIP : 0) |
 			(s5k4h7->hflip->val ? S5K4H7_HFLIP : 0), NULL);
 	if (ret)
 		goto error;
+
+	ret = cci_write(s5k4h7->regmap, S5K4H7_REG_CTRL_MODE,
+			S5K4H7_MODE_STREAMING, NULL);
+	if (ret)
+		goto error;
+
+	/* Flipping changes the Bayer layout negotiated before streaming. */
+	__v4l2_ctrl_grab(s5k4h7->hflip, true);
+	__v4l2_ctrl_grab(s5k4h7->vflip, true);
 
 	return 0;
 
@@ -428,6 +466,8 @@ static int s5k4h7_disable_streams(struct v4l2_subdev *sd,
 	if (ret)
 		dev_err(s5k4h7->dev, "failed to stop streaming: %d\n", ret);
 
+	__v4l2_ctrl_grab(s5k4h7->hflip, false);
+	__v4l2_ctrl_grab(s5k4h7->vflip, false);
 	pm_runtime_mark_last_busy(s5k4h7->dev);
 	pm_runtime_put_autosuspend(s5k4h7->dev);
 
@@ -526,9 +566,10 @@ static int s5k4h7_get_selection(struct v4l2_subdev *sd,
 
 	switch (sel->target) {
 	case V4L2_SEL_TGT_CROP:
+	case V4L2_SEL_TGT_CROP_DEFAULT:
 	case V4L2_SEL_TGT_CROP_BOUNDS:
-		sel->r.left = 0;
-		sel->r.top = 0;
+		sel->r.left = 8;
+		sel->r.top = 8;
 		sel->r.width = s5k4h7->mode->width;
 		sel->r.height = s5k4h7->mode->height;
 		return 0;
@@ -580,23 +621,26 @@ static const struct v4l2_subdev_internal_ops s5k4h7_internal_ops = {
 
 static int s5k4h7_identify_sensor(struct s5k4h7 *s5k4h7)
 {
-	u64 val;
+	u64 val = 0;
 	int ret;
 
-	ret = cci_read(s5k4h7->regmap, S5K4H7_REG_CHIP_ID, &val, NULL);
+	for (int retry = 0; retry < 5; retry++) {
+		ret = cci_read(s5k4h7->regmap, S5K4H7_REG_CHIP_ID, &val, NULL);
+		if (!ret && (val & 0xffff) == S5K4H7_CHIP_ID) {
+			dev_info(s5k4h7->dev, "Found Samsung S5K4H7 image sensor (0x%04llx)\n", val);
+			return 0;
+		}
+		msleep(20);
+	}
+
 	if (ret) {
 		dev_err(s5k4h7->dev, "failed to read chip id: %d\n", ret);
 		return ret;
 	}
 
-	if (val != S5K4H7_CHIP_ID) {
-		dev_err(s5k4h7->dev, "chip id mismatch: expected 0x%04x, got 0x%04llx\n",
-			S5K4H7_CHIP_ID, val);
-		return -ENODEV;
-	}
-
-	dev_info(s5k4h7->dev, "Found Samsung S5K4H7 image sensor (0x%04llx)\n", val);
-	return 0;
+	dev_err(s5k4h7->dev, "chip id mismatch: expected 0x%04x, got 0x%04llx\n",
+		S5K4H7_CHIP_ID, val);
+	return -ENODEV;
 }
 
 static int s5k4h7_check_hwcfg(struct s5k4h7 *s5k4h7)
@@ -649,8 +693,11 @@ static int s5k4h7_power_on(struct device *dev)
 	if (ret)
 		goto disable_regulators;
 
+	/* Pulse reset: assert, wait, then deassert to release sensor */
+	gpiod_set_value_cansleep(s5k4h7->reset_gpio, 1);
+	usleep_range(2000, 3000);
 	gpiod_set_value_cansleep(s5k4h7->reset_gpio, 0);
-	usleep_range(10 * USEC_PER_MSEC, 15 * USEC_PER_MSEC);
+	usleep_range(10000, 12000);
 
 	return 0;
 

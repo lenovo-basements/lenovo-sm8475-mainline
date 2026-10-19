@@ -608,6 +608,200 @@ static const struct ov13b10_link_freq_config
 	}
 };
 
+static const struct ov13b10_reg ov13b10_24mhz_init_regs[] = {
+	{0x0103, 0x01},
+	{0x0303, 0x01},
+	{0x0305, 0x46},
+	{0x0321, 0x00},
+	{0x0323, 0x04},
+	{0x0324, 0x01},
+	{0x0325, 0x50},
+	{0x0326, 0x81},
+	{0x0327, 0x04},
+	{0x3011, 0x7c},
+	{0x3012, 0x07},
+	{0x3013, 0x32},
+	{0x3107, 0x23},
+	{0x3501, 0x0c},
+	{0x3502, 0x10},
+	{0x3504, 0x08},
+	{0x3508, 0x07},
+	{0x3509, 0xc0},
+	{0x3600, 0x16},
+	{0x3601, 0x54},
+	{0x3612, 0x4e},
+	{0x3620, 0x00},
+	{0x3621, 0x68},
+	{0x3622, 0x66},
+	{0x3623, 0x03},
+	{0x3662, 0x92},
+	{0x3666, 0xbb},
+	{0x3667, 0x44},
+	{0x366e, 0xff},
+	{0x366f, 0xf3},
+	{0x3675, 0x44},
+	{0x3676, 0x00},
+	{0x367f, 0xe9},
+	{0x3681, 0x32},
+	{0x3682, 0x1f},
+	{0x3683, 0x0b},
+	{0x3684, 0x0b},
+	{0x3704, 0x0f},
+	{0x3706, 0x40},
+	{0x3708, 0x3b},
+	{0x3709, 0x72},
+	{0x370b, 0xa2},
+	{0x3714, 0x24},
+	{0x371a, 0x3e},
+	{0x3725, 0x42},
+	{0x3739, 0x12},
+	{0x3767, 0x00},
+	{0x377a, 0x0d},
+	{0x3789, 0x18},
+	{0x3790, 0x40},
+	{0x3791, 0xa2},
+	{0x37c2, 0x04},
+	{0x37c3, 0xf1},
+	{0x37d9, 0x0c},
+	{0x37da, 0x02},
+	{0x37dc, 0x02},
+	{0x37e1, 0x04},
+	{0x37e2, 0x0a},
+	{0x3800, 0x00},
+	{0x3801, 0x00},
+	{0x3802, 0x00},
+	{0x3803, 0x08},
+	{0x3804, 0x10},
+	{0x3805, 0x8f},
+	{0x3806, 0x0c},
+	{0x3807, 0x47},
+	{0x3808, 0x10},
+	{0x3809, 0x70},
+	{0x380a, 0x0c},
+	{0x380b, 0x30},
+	{0x380c, 0x04},
+	{0x380d, 0x98},
+	{0x380e, 0x0c},
+	{0x380f, 0x7c},
+	{0x3811, 0x0f},
+	{0x3813, 0x08},
+	{0x3814, 0x01},
+	{0x3815, 0x01},
+	{0x3816, 0x01},
+	{0x3817, 0x01},
+	{0x381f, 0x08},
+	{0x3820, 0x88},
+	{0x3821, 0x00},
+	{0x3822, 0x14},
+	{0x3823, 0x18},
+	{0x3827, 0x01},
+	{0x382e, 0xe6},
+	{0x3c80, 0x00},
+	{0x3c87, 0x01},
+	{0x3c8c, 0x19},
+	{0x3c8d, 0x1c},
+	{0x3ca0, 0x00},
+	{0x3ca1, 0x00},
+	{0x3ca2, 0x00},
+	{0x3ca3, 0x00},
+	{0x3ca4, 0x50},
+	{0x3ca5, 0x11},
+	{0x3ca6, 0x01},
+	{0x3ca7, 0x00},
+	{0x3ca8, 0x00},
+	{0x4008, 0x02},
+	{0x4009, 0x0f},
+	{0x400a, 0x01},
+	{0x400b, 0x19},
+	{0x4011, 0x21},
+	{0x4017, 0x08},
+	{0x4019, 0x04},
+	{0x401a, 0x58},
+	{0x4032, 0x1e},
+	{0x4050, 0x02},
+	{0x4051, 0x09},
+	{0x405e, 0x00},
+	{0x4066, 0x02},
+	{0x4501, 0x00},
+	{0x4502, 0x10},
+	{0x4505, 0x00},
+	{0x4800, 0x64},
+	{0x481b, 0x3e},
+	{0x481f, 0x30},
+	{0x4825, 0x34},
+	{0x4837, 0x0e},
+	{0x484b, 0x01},
+	{0x4883, 0x02},
+	{0x5000, 0xff},
+	{0x5001, 0x0f},
+	{0x5045, 0x20},
+	{0x5046, 0x20},
+	{0x5047, 0xa4},
+	{0x5048, 0x20},
+	{0x5049, 0xa4},
+};
+
+static const struct ov13b10_reg ov13b10_24mhz_4208x3120_regs[] = {
+	{0x0305, 0x46},
+	{0x3501, 0x0c},
+	{0x3502, 0x10},
+	{0x3662, 0x92},
+	{0x3714, 0x24},
+	{0x3739, 0x12},
+	{0x37c2, 0x04},
+	{0x37d9, 0x0c},
+	{0x37e2, 0x0a},
+	{0x3800, 0x00},
+	{0x3801, 0x00},
+	{0x3802, 0x00},
+	{0x3803, 0x08},
+	{0x3804, 0x10},
+	{0x3805, 0x8f},
+	{0x3806, 0x0c},
+	{0x3807, 0x47},
+	{0x3808, 0x10},
+	{0x3809, 0x70},
+	{0x380a, 0x0c},
+	{0x380b, 0x30},
+	{0x380e, 0x0c},
+	{0x380f, 0x7c},
+	{0x3811, 0x0f},
+	{0x3813, 0x08},
+	{0x3814, 0x01},
+	{0x3816, 0x01},
+	{0x3820, 0x88},
+	{0x3c8c, 0x19},
+	{0x4008, 0x02},
+	{0x4009, 0x0f},
+	{0x4050, 0x02},
+	{0x4051, 0x09},
+	{0x4501, 0x00},
+	{0x4505, 0x00},
+	{0x4837, 0x0e},
+	{0x5000, 0xff},
+	{0x5001, 0x0f},
+};
+
+static const struct ov13b10_reg_list ov13b10_24mhz_pll = {
+	.num_of_regs = ARRAY_SIZE(ov13b10_24mhz_init_regs),
+	.regs = ov13b10_24mhz_init_regs,
+};
+
+static const struct ov13b10_mode supported_24mhz_modes[] = {
+	{
+		.width = 4208,
+		.height = 3120,
+		.vts_def = 3196,
+		.vts_min = 3196,
+		.ppl = 4704,
+		.link_freq_index = OV13B10_LINK_FREQ_INDEX_0,
+		.reg_list = {
+			.num_of_regs = ARRAY_SIZE(ov13b10_24mhz_4208x3120_regs),
+			.regs = ov13b10_24mhz_4208x3120_regs,
+		},
+	},
+};
+
 /* Mode configs */
 static const struct ov13b10_mode supported_4_lanes_modes[] = {
 	/* 4 data lanes */
@@ -747,6 +941,14 @@ struct ov13b10 {
 
 #define to_ov13b10(_sd)	container_of(_sd, struct ov13b10, sd)
 
+static u32 ov13b10_get_format_code(struct ov13b10 *ov13b)
+{
+	if (clk_get_rate(ov13b->img_clk) == 24000000)
+		return MEDIA_BUS_FMT_SBGGR10_1X10;
+
+	return MEDIA_BUS_FMT_SGRBG10_1X10;
+}
+
 /* Read registers up to 4 at a time */
 static int ov13b10_read_reg(struct ov13b10 *ov13b,
 			    u16 reg, u32 len, u32 *val)
@@ -853,7 +1055,7 @@ static int ov13b10_open(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
 	/* Initialize try_fmt */
 	try_fmt->width = default_mode->width;
 	try_fmt->height = default_mode->height;
-	try_fmt->code = MEDIA_BUS_FMT_SGRBG10_1X10;
+	try_fmt->code = ov13b10_get_format_code(ov13b);
 	try_fmt->field = V4L2_FIELD_NONE;
 
 	/* No crop or compose */
@@ -1049,11 +1251,13 @@ static int ov13b10_enum_mbus_code(struct v4l2_subdev *sd,
 				  struct v4l2_subdev_state *sd_state,
 				  struct v4l2_subdev_mbus_code_enum *code)
 {
-	/* Only one bayer order(GRBG) is supported */
+	struct ov13b10 *ov13b = to_ov13b10(sd);
+
+	/* Each clock/mode configuration has one supported Bayer order. */
 	if (code->index > 0)
 		return -EINVAL;
 
-	code->code = MEDIA_BUS_FMT_SGRBG10_1X10;
+	code->code = ov13b10_get_format_code(ov13b);
 
 	return 0;
 }
@@ -1068,7 +1272,7 @@ static int ov13b10_enum_frame_size(struct v4l2_subdev *sd,
 	if (fse->index >= ov13b->supported_modes_num)
 		return -EINVAL;
 
-	if (fse->code != MEDIA_BUS_FMT_SGRBG10_1X10)
+	if (fse->code != ov13b10_get_format_code(ov13b))
 		return -EINVAL;
 
 	fse->min_width = supported_modes[fse->index].width;
@@ -1079,12 +1283,13 @@ static int ov13b10_enum_frame_size(struct v4l2_subdev *sd,
 	return 0;
 }
 
-static void ov13b10_update_pad_format(const struct ov13b10_mode *mode,
+static void ov13b10_update_pad_format(struct ov13b10 *ov13b,
+				      const struct ov13b10_mode *mode,
 				      struct v4l2_subdev_format *fmt)
 {
 	fmt->format.width = mode->width;
 	fmt->format.height = mode->height;
-	fmt->format.code = MEDIA_BUS_FMT_SGRBG10_1X10;
+	fmt->format.code = ov13b10_get_format_code(ov13b);
 	fmt->format.field = V4L2_FIELD_NONE;
 }
 
@@ -1098,7 +1303,7 @@ static int ov13b10_do_get_pad_format(struct ov13b10 *ov13b,
 		framefmt = v4l2_subdev_state_get_format(sd_state, fmt->pad);
 		fmt->format = *framefmt;
 	} else {
-		ov13b10_update_pad_format(ov13b->cur_mode, fmt);
+		ov13b10_update_pad_format(ov13b, ov13b->cur_mode, fmt);
 	}
 
 	return 0;
@@ -1135,15 +1340,13 @@ ov13b10_set_pad_format(struct v4l2_subdev *sd,
 
 	mutex_lock(&ov13b->mutex);
 
-	/* Only one raw bayer(GRBG) order is supported */
-	if (fmt->format.code != MEDIA_BUS_FMT_SGRBG10_1X10)
-		fmt->format.code = MEDIA_BUS_FMT_SGRBG10_1X10;
+	fmt->format.code = ov13b10_get_format_code(ov13b);
 
 	mode = v4l2_find_nearest_size(supported_modes,
 				      ov13b->supported_modes_num,
 				      width, height,
 				      fmt->format.width, fmt->format.height);
-	ov13b10_update_pad_format(mode, fmt);
+	ov13b10_update_pad_format(ov13b, mode, fmt);
 	if (fmt->which == V4L2_SUBDEV_FORMAT_TRY) {
 		framefmt = v4l2_subdev_state_get_format(sd_state, fmt->pad);
 		*framefmt = fmt->format;
@@ -1266,7 +1469,10 @@ static int ov13b10_start_streaming(struct ov13b10 *ov13b)
 	}
 
 	link_freq_index = ov13b->cur_mode->link_freq_index;
-	reg_list = &link_freq_configs[link_freq_index].reg_list;
+	if (clk_get_rate(ov13b->img_clk) == 24000000)
+		reg_list = &ov13b10_24mhz_pll;
+	else
+		reg_list = &link_freq_configs[link_freq_index].reg_list;
 	ret = ov13b10_write_reg_list(ov13b, reg_list);
 	if (ret) {
 		dev_err(ov13b->dev, "%s failed to set plls\n", __func__);
@@ -1503,10 +1709,17 @@ static int ov13b10_get_pm_resources(struct ov13b10 *ov13b)
 				     "failed to get imaging clock\n");
 
 	freq = clk_get_rate(ov13b->img_clk);
-	if (freq != OV13B10_EXT_CLK && freq != 24000000)
+	if (freq != OV13B10_EXT_CLK &&
+	    !(freq == 24000000 && ov13b->data_lanes == 4))
 		return dev_err_probe(ov13b->dev, -EINVAL,
 				     "external clock %lu is not supported\n",
 				     freq);
+
+	if (freq == 24000000) {
+		ov13b->supported_modes = supported_24mhz_modes;
+		ov13b->supported_modes_num = ARRAY_SIZE(supported_24mhz_modes);
+		ov13b->cur_mode = &supported_24mhz_modes[0];
+	}
 
 	for (unsigned int i = 0; i < ARRAY_SIZE(ov13b10_supply_names); i++)
 		ov13b->supplies[i].supply = ov13b10_supply_names[i];
