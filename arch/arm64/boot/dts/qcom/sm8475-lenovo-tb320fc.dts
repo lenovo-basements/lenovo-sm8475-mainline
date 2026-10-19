@@ -538,7 +538,6 @@
 	status = "okay";
 	dr_mode = "otg";
 	usb-role-switch;
-	wakeup-source;
 };
 
 / {

@@ -571,10 +571,37 @@ static const struct auxiliary_device_id pmic_glink_ucsi_id_table[] = {
 };
 MODULE_DEVICE_TABLE(auxiliary, pmic_glink_ucsi_id_table);
 
+static int pmic_glink_ucsi_suspend(struct device *dev)
+{
+	struct pmic_glink_ucsi *ucsi = dev_get_drvdata(dev);
+
+	if (ucsi->ucsi_registered && ucsi->ucsi)
+		return ucsi_suspend(ucsi->ucsi);
+
+	return 0;
+}
+
+static int pmic_glink_ucsi_resume(struct device *dev)
+{
+	struct pmic_glink_ucsi *ucsi = dev_get_drvdata(dev);
+
+	if (ucsi->ucsi_registered && ucsi->ucsi)
+		return ucsi_resume(ucsi->ucsi);
+
+	return 0;
+}
+
+static DEFINE_SIMPLE_DEV_PM_OPS(pmic_glink_ucsi_pm_ops,
+				pmic_glink_ucsi_suspend,
+				pmic_glink_ucsi_resume);
+
 static struct auxiliary_driver pmic_glink_ucsi_driver = {
 	.name = "pmic_glink_ucsi",
 	.probe = pmic_glink_ucsi_probe,
 	.remove = pmic_glink_ucsi_remove,
+	.driver = {
+		.pm = pm_sleep_ptr(&pmic_glink_ucsi_pm_ops),
+	},
 	.id_table = pmic_glink_ucsi_id_table,
 };
 
