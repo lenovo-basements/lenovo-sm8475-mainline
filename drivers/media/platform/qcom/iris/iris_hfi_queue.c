@@ -117,6 +117,8 @@ int iris_hfi_queue_cmd_write_locked(struct iris_core *core, void *pkt, u32 pkt_s
 		return -EINVAL;
 
 	if (!iris_hfi_queue_write(q_info, pkt, pkt_size)) {
+		dev_dbg(core->dev, "HFI TX %u bytes: %*ph\n", pkt_size,
+			min_t(u32, pkt_size, 64), pkt);
 		iris_vpu_raise_interrupt(core);
 	} else {
 		dev_err(core->dev, "queue full\n");
@@ -167,6 +169,8 @@ int iris_hfi_queue_msg_read(struct iris_core *core, void *pkt)
 		ret = -ENODATA;
 		goto unlock;
 	}
+	dev_dbg(core->dev, "HFI RX %u bytes: %*ph\n", *(u32 *)pkt,
+		min_t(u32, *(u32 *)pkt, 64), pkt);
 
 unlock:
 	mutex_unlock(&core->lock);

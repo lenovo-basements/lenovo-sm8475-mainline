@@ -23,6 +23,7 @@
 enum qcom_battmgr_variant {
 	QCOM_BATTMGR_SC8280XP,
 	QCOM_BATTMGR_SM8350,
+	QCOM_BATTMGR_SM8450,
 	QCOM_BATTMGR_SM8550,
 	QCOM_BATTMGR_X1E80100,
 };
@@ -458,6 +459,10 @@ static int qcom_battmgr_bat_sm8350_update(struct qcom_battmgr *battmgr,
 	unsigned int prop;
 	int ret;
 
+	if (psp == POWER_SUPPLY_PROP_CHARGE_CONTROL_START_THRESHOLD ||
+	    psp == POWER_SUPPLY_PROP_CHARGE_CONTROL_END_THRESHOLD)
+		return 0;
+
 	if (psp >= ARRAY_SIZE(sm8350_bat_prop_map))
 		return -EINVAL;
 
@@ -662,6 +667,26 @@ static int qcom_battmgr_bat_get_property(struct power_supply *psy,
 static int qcom_battmgr_set_charge_control(struct qcom_battmgr *battmgr,
 					   u32 target_soc, u32 delta_soc)
 {
+	int ret;
+
+	if (battmgr->variant == QCOM_BATTMGR_SM8450 ||
+	    battmgr->variant == QCOM_BATTMGR_SM8350) {
+		u32 enable = (target_soc >= 100) ? 0 : 1;
+
+		ret = qcom_battmgr_request_property(battmgr, BATTMGR_BAT_PROPERTY_SET,
+						    BATT_CHG_CTRL_END_THR, target_soc);
+		if (ret < 0)
+			return ret;
+
+		ret = qcom_battmgr_request_property(battmgr, BATTMGR_BAT_PROPERTY_SET,
+						    BATT_CHG_CTRL_START_THR, target_soc - delta_soc);
+		if (ret < 0)
+			return ret;
+
+		return qcom_battmgr_request_property(battmgr, BATTMGR_BAT_PROPERTY_SET,
+						     BATT_CHG_CTRL_EN, enable);
+	}
+
 	struct qcom_battmgr_charge_ctrl_request request = {
 		.hdr.owner = cpu_to_le32(PMIC_GLINK_OWNER_BATTMGR),
 		.hdr.type = cpu_to_le32(PMIC_GLINK_REQ_RESP),
@@ -704,7 +729,7 @@ static int qcom_battmgr_set_charge_start_threshold(struct qcom_battmgr *battmgr,
 		battmgr->info.charge_ctrl_end = target_soc;
 	}
 
-	return 0;
+	return ret;
 }
 
 static int qcom_battmgr_set_charge_end_threshold(struct qcom_battmgr *battmgr, int end_soc)
@@ -725,7 +750,7 @@ static int qcom_battmgr_set_charge_end_threshold(struct qcom_battmgr *battmgr, i
 		battmgr->info.charge_ctrl_end = end_soc;
 	}
 
-	return 0;
+	return ret;
 }
 
 static int qcom_battmgr_charge_control_thresholds_init(struct qcom_battmgr *battmgr)
@@ -1556,6 +1581,17 @@ static void qcom_battmgr_sm8350_callback(struct qcom_battmgr *battmgr,
 			break;
 		}
 		break;
+	case BATTMGR_BAT_PROPERTY_SET:
+		if (payload_len != sizeof(resp->intval)) {
+			dev_warn(battmgr->dev,
+				 "invalid payload length for %#x request: %zd\n",
+				 opcode, payload_len);
+			battmgr->error = -ENODATA;
+			return;
+		}
+
+		battmgr->error = le32_to_cpu(resp->intval.result);
+		break;
 	case BATTMGR_REQUEST_NOTIFICATION:
 	case BATTMGR_CHG_CTRL_LIMIT_EN:
 		battmgr->error = 0;
@@ -1616,7 +1652,7 @@ static const struct of_device_id qcom_battmgr_of_variants[] = {
 	{ .compatible = "qcom,kaanapali-pmic-glink", .data = (void *)QCOM_BATTMGR_SM8550 },
 	{ .compatible = "qcom,sc8180x-pmic-glink", .data = (void *)QCOM_BATTMGR_SC8280XP },
 	{ .compatible = "qcom,sc8280xp-pmic-glink", .data = (void *)QCOM_BATTMGR_SC8280XP },
-	{ .compatible = "qcom,sm8450-pmic-glink", .data = (void *)QCOM_BATTMGR_SM8550 },
+	{ .compatible = "qcom,sm8450-pmic-glink", .data = (void *)QCOM_BATTMGR_SM8450 },
 	{ .compatible = "qcom,sm8550-pmic-glink", .data = (void *)QCOM_BATTMGR_SM8550 },
 	{ .compatible = "qcom,x1e80100-pmic-glink", .data = (void *)QCOM_BATTMGR_X1E80100 },
 	/* Unmatched devices falls back to QCOM_BATTMGR_SM8350 */
@@ -1691,7 +1727,8 @@ static int qcom_battmgr_probe(struct auxiliary_device *adev,
 			return dev_err_probe(dev, PTR_ERR(battmgr->wls_psy),
 					     "failed to register wireless charing power supply\n");
 	} else {
-		if (battmgr->variant == QCOM_BATTMGR_SM8550)
+		if (battmgr->variant == QCOM_BATTMGR_SM8450 ||
+		    battmgr->variant == QCOM_BATTMGR_SM8550)
 			psy_desc = &sm8550_bat_psy_desc;
 		else
 			psy_desc = &sm8350_bat_psy_desc;

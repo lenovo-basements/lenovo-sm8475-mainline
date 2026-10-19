@@ -1034,7 +1034,7 @@ static int cs35l45_sys_suspend(struct device *dev)
 	return 0;
 }
 
-static int cs35l45_sys_suspend_noirq(struct device *dev)
+static int __maybe_unused cs35l45_sys_suspend_noirq(struct device *dev)
 {
 	struct cs35l45_private *cs35l45 = dev_get_drvdata(dev);
 
@@ -1044,7 +1044,7 @@ static int cs35l45_sys_suspend_noirq(struct device *dev)
 	return 0;
 }
 
-static int cs35l45_sys_resume_noirq(struct device *dev)
+static int __maybe_unused cs35l45_sys_resume_noirq(struct device *dev)
 {
 	struct cs35l45_private *cs35l45 = dev_get_drvdata(dev);
 
@@ -1507,7 +1507,6 @@ EXPORT_GPL_DEV_PM_OPS(cs35l45_pm_ops) = {
 	RUNTIME_PM_OPS(cs35l45_runtime_suspend, cs35l45_runtime_resume, NULL)
 
 	SYSTEM_SLEEP_PM_OPS(cs35l45_sys_suspend, cs35l45_sys_resume)
-	NOIRQ_SYSTEM_SLEEP_PM_OPS(cs35l45_sys_suspend_noirq, cs35l45_sys_resume_noirq)
 };
 
 MODULE_DESCRIPTION("ASoC CS35L45 driver");
