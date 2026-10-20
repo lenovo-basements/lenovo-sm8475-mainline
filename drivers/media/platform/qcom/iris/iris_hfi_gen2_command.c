@@ -63,7 +63,8 @@ static int iris_hfi_gen2_sys_interframe_powercollapse(struct iris_core *core)
 	if (!hdr)
 		return -ENOMEM;
 
-	iris_hfi_gen2_packet_sys_interframe_powercollapse(core, hdr);
+	iris_hfi_gen2_packet_sys_interframe_powercollapse(core, hdr,
+							  !core->iris_platform_data->no_ifpc);
 	ret = iris_hfi_queue_cmd_write_locked(core, hdr, hdr->size);
 
 	kfree(hdr);
@@ -1179,6 +1180,7 @@ static int iris_hfi_gen2_session_resume_drc(struct iris_inst *inst, u32 plane)
 {
 	struct iris_inst_hfi_gen2 *inst_hfi_gen2 = to_iris_inst_hfi_gen2(inst);
 	u32 payload = HFI_CMD_SETTINGS_CHANGE;
+	bool legacy = inst->core->iris_firmware_desc->resume_without_payload;
 
 	iris_hfi_gen2_packet_session_command(inst,
 					     HFI_CMD_RESUME,
@@ -1186,9 +1188,9 @@ static int iris_hfi_gen2_session_resume_drc(struct iris_inst *inst, u32 plane)
 					     HFI_HOST_FLAGS_INTR_REQUIRED),
 					     iris_hfi_gen2_get_port(inst, plane),
 					     inst->session_id,
-					     HFI_PAYLOAD_U32,
-					     &payload,
-					     sizeof(u32));
+					     legacy ? HFI_PAYLOAD_NONE : HFI_PAYLOAD_U32,
+					     legacy ? NULL : &payload,
+					     legacy ? 0 : sizeof(u32));
 
 	return iris_hfi_queue_cmd_write(inst->core, inst_hfi_gen2->packet,
 					inst_hfi_gen2->packet->size);
@@ -1198,6 +1200,7 @@ static int iris_hfi_gen2_session_resume_drain(struct iris_inst *inst, u32 plane)
 {
 	struct iris_inst_hfi_gen2 *inst_hfi_gen2 = to_iris_inst_hfi_gen2(inst);
 	u32 payload = HFI_CMD_DRAIN;
+	bool legacy = inst->core->iris_firmware_desc->resume_without_payload;
 
 	iris_hfi_gen2_packet_session_command(inst,
 					     HFI_CMD_RESUME,
@@ -1205,9 +1208,9 @@ static int iris_hfi_gen2_session_resume_drain(struct iris_inst *inst, u32 plane)
 					     HFI_HOST_FLAGS_INTR_REQUIRED),
 					     iris_hfi_gen2_get_port(inst, plane),
 					     inst->session_id,
-					     HFI_PAYLOAD_U32,
-					     &payload,
-					     sizeof(u32));
+					     legacy ? HFI_PAYLOAD_NONE : HFI_PAYLOAD_U32,
+					     legacy ? NULL : &payload,
+					     legacy ? 0 : sizeof(u32));
 
 	return iris_hfi_queue_cmd_write(inst->core, inst_hfi_gen2->packet,
 					inst_hfi_gen2->packet->size);

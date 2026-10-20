@@ -266,9 +266,9 @@ void iris_hfi_gen2_packet_session_property(struct iris_inst *inst,
 }
 
 void iris_hfi_gen2_packet_sys_interframe_powercollapse(struct iris_core *core,
-						       struct iris_hfi_header *hdr)
+						       struct iris_hfi_header *hdr, bool enable)
 {
-	u32 payload = 1; /* HFI_TRUE */
+	u32 payload = enable; /* HFI_TRUE */
 
 	iris_hfi_gen2_create_header(hdr, 0 /*session_id*/, core->header_id++);
 

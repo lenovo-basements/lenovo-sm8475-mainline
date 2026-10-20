@@ -1003,6 +1003,9 @@ static u32 iris_vpu_dec_partial_size(struct iris_inst *inst)
 	u32 height = f->fmt.pix_mp.height;
 	u32 width = f->fmt.pix_mp.width;
 
+	if (inst->codec != V4L2_PIX_FMT_AV1)
+		return 0;
+
 	return hfi_buffer_ibc_av1d(width, height);
 }
 
@@ -2247,8 +2250,9 @@ int iris_vpu_buf_count(struct iris_inst *inst, enum iris_buffer_type buffer_type
 	case BUF_SCRATCH_2:
 	case BUF_VPSS:
 	case BUF_ARP:
-	case BUF_PARTIAL:
 		return 1; /* internal buffer count needed by firmware is 1 */
+	case BUF_PARTIAL:
+		return inst->codec == V4L2_PIX_FMT_AV1 ? 1 : 0;
 	case BUF_DPB:
 		return iris_vpu_dpb_count(inst);
 	default:
