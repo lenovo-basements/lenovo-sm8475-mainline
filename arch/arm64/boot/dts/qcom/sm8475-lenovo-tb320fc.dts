@@ -846,7 +846,7 @@
 
 &soc {
 	iris: video-codec@aa00000 {
-		compatible = "qcom,sm8250-venus";
+		compatible = "qcom,sm8450-iris", "qcom,sm8250-venus";
 		reg = <0 0x0aa00000 0 0xf0000>;
 		interrupts = <GIC_SPI 174 IRQ_TYPE_LEVEL_HIGH>;
 
