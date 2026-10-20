@@ -81,6 +81,8 @@ static int ktz8866_update_bits(struct ktz8866 *ktz, unsigned int reg,
 	return regmap_update_bits(ktz->regmap, reg, mask, val);
 }
 
+static int ktz8866_init(struct ktz8866 *ktz);
+
 static int ktz8866_backlight_update_status(struct backlight_device *backlight_dev)
 {
 	struct ktz8866 *ktz = bl_get_data(backlight_dev);
@@ -92,6 +94,12 @@ static int ktz8866_backlight_update_status(struct backlight_device *backlight_de
 		if (ret)
 			return ret;
 		ktz->led_on = false;
+	}
+
+	if (!ktz->led_on && brightness) {
+		ret = ktz8866_init(ktz);
+		if (ret)
+			dev_warn(&backlight_dev->dev, "ktz8866 re-init failed: %d\n", ret);
 	}
 
 	/* Set brightness */
@@ -253,10 +261,26 @@ static const struct of_device_id ktz8866_match_table[] = {
 };
 MODULE_DEVICE_TABLE(of, ktz8866_match_table);
 
+static int ktz8866_pm_resume(struct device *dev)
+{
+	struct i2c_client *client = to_i2c_client(dev);
+	struct backlight_device *backlight_dev = i2c_get_clientdata(client);
+	struct ktz8866 *ktz = bl_get_data(backlight_dev);
+
+	ktz->led_on = false;
+	if (backlight_dev)
+		backlight_update_status(backlight_dev);
+
+	return 0;
+}
+
+static DEFINE_SIMPLE_DEV_PM_OPS(ktz8866_pm_ops, NULL, ktz8866_pm_resume);
+
 static struct i2c_driver ktz8866_driver = {
 	.driver = {
 		.name = "ktz8866",
 		.of_match_table = ktz8866_match_table,
+		.pm = pm_sleep_ptr(&ktz8866_pm_ops),
 	},
 	.probe = ktz8866_probe,
 	.remove = ktz8866_remove,
