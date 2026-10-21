@@ -23,6 +23,7 @@ static struct dentry *ucsi_debugfs_root;
 static int ucsi_cmd(void *data, u64 val)
 {
 	struct ucsi *ucsi = data;
+	size_t response_size;
 	int ret;
 
 	memset(&ucsi->debugfs->response, 0, sizeof(ucsi->debugfs->response));
@@ -60,7 +61,8 @@ static int ucsi_cmd(void *data, u64 val)
 	case UCSI_GET_LPM_PPM_INFO:
 		ret = ucsi_send_command(ucsi, val,
 					&ucsi->debugfs->response,
-					sizeof(ucsi->debugfs->response));
+					min_t(size_t, sizeof(ucsi->debugfs->response),
+					      UCSI_MAX_DATA_LENGTH(ucsi)));
 		break;
 	default:
 		ret = -EOPNOTSUPP;
@@ -70,6 +72,10 @@ static int ucsi_cmd(void *data, u64 val)
 		ucsi->debugfs->status = ret;
 		return ret;
 	}
+	/* Do not expose MESSAGE_IN bytes beyond the reported response length. */
+	response_size = min_t(size_t, ret, sizeof(ucsi->debugfs->response));
+	memset((u8 *)&ucsi->debugfs->response + response_size, 0,
+	       sizeof(ucsi->debugfs->response) - response_size);
 
 	return 0;
 }

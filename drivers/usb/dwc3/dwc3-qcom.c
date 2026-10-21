@@ -81,6 +81,7 @@ struct dwc3_qcom {
 	enum usb_dr_mode	mode;
 	bool			is_suspended;
 	bool			pm_suspended;
+	bool			force_utmi_clk;
 	struct icc_path		*icc_path_ddr;
 	struct icc_path		*icc_path_apps;
 
@@ -419,21 +420,57 @@ static irqreturn_t qcom_dwc3_resume_irq(int irq, void *data)
 	return IRQ_HANDLED;
 }
 
-static void dwc3_qcom_select_utmi_clk(struct dwc3_qcom *qcom)
+static void dwc3_qcom_select_pipe_clk(struct dwc3_qcom *qcom, bool use_utmi)
 {
-	/* Configure dwc3 to use UTMI clock as PIPE clock not present */
+	/* Gate the clock while selecting PIPE or the USB2 UTMI fallback. */
 	dwc3_qcom_setbits(qcom->qscratch_base, QSCRATCH_GENERAL_CFG,
 			  PIPE_UTMI_CLK_DIS);
 
 	usleep_range(100, 1000);
 
-	dwc3_qcom_setbits(qcom->qscratch_base, QSCRATCH_GENERAL_CFG,
-			  PIPE_UTMI_CLK_SEL | PIPE3_PHYSTATUS_SW);
+	if (use_utmi)
+		dwc3_qcom_setbits(qcom->qscratch_base, QSCRATCH_GENERAL_CFG,
+				  PIPE_UTMI_CLK_SEL | PIPE3_PHYSTATUS_SW);
+	else
+		dwc3_qcom_clrbits(qcom->qscratch_base, QSCRATCH_GENERAL_CFG,
+				  PIPE_UTMI_CLK_SEL | PIPE3_PHYSTATUS_SW);
 
 	usleep_range(100, 1000);
 
 	dwc3_qcom_clrbits(qcom->qscratch_base, QSCRATCH_GENERAL_CFG,
 			  PIPE_UTMI_CLK_DIS);
+}
+
+static void dwc3_qcom_update_pipe_clk(struct dwc3_qcom *qcom, enum usb_role role)
+{
+	struct dwc3 *dwc = &qcom->dwc;
+	enum phy_mode mode;
+	bool use_utmi;
+	u32 mask = PIPE_UTMI_CLK_SEL | PIPE3_PHYSTATUS_SW;
+	u32 value;
+	int ret;
+
+	if (qcom->force_utmi_clk) {
+		use_utmi = true;
+	} else {
+		if (dwc->num_usb3_ports != 1)
+			return;
+
+		mode = role == USB_ROLE_DEVICE ? PHY_MODE_USB_DEVICE_SS : PHY_MODE_USB_HOST_SS;
+		ret = phy_validate(dwc->usb3_generic_phy[0], mode, 0, NULL);
+		/* Providers without lane validation retain their existing clocks. */
+		if (ret && ret != -EBUSY)
+			return;
+
+		use_utmi = ret == -EBUSY;
+	}
+
+	/* Read back the selection: a power collapse may have reset QSCRATCH. */
+	value = readl(qcom->qscratch_base + QSCRATCH_GENERAL_CFG);
+	if ((value & (mask | PIPE_UTMI_CLK_DIS)) == (use_utmi ? mask : 0))
+		return;
+
+	dwc3_qcom_select_pipe_clk(qcom, use_utmi);
 }
 
 static int dwc3_qcom_request_irq(struct dwc3_qcom *qcom, int irq,
@@ -562,19 +599,22 @@ static void dwc3_qcom_set_role_notifier(struct dwc3 *dwc, enum usb_role next_rol
 {
 	struct dwc3_qcom *qcom = to_dwc3_qcom(dwc);
 
-	if (qcom->current_role == next_role)
-		return;
-
 	if (pm_runtime_resume_and_get(qcom->dev)) {
 		dev_dbg(qcom->dev, "Failed to resume device\n");
 		return;
 	}
+
+	/* The PIPE clock can disappear when DisplayPort takes all four lanes. */
+	dwc3_qcom_update_pipe_clk(qcom, next_role);
+	if (qcom->current_role == next_role)
+		goto out;
 
 	if (qcom->current_role == USB_ROLE_DEVICE)
 		dwc3_qcom_vbus_override_enable(qcom, false);
 	else if (qcom->current_role != USB_ROLE_DEVICE)
 		dwc3_qcom_vbus_override_enable(qcom, true);
 
+out:
 	pm_runtime_mark_last_busy(qcom->dev);
 	pm_runtime_put_sync(qcom->dev);
 
@@ -680,8 +720,9 @@ static int dwc3_qcom_probe(struct platform_device *pdev)
 	 */
 	ignore_pipe_clk = device_property_read_bool(dev,
 				"qcom,select-utmi-as-pipe-clk");
+	qcom->force_utmi_clk = ignore_pipe_clk;
 	if (ignore_pipe_clk)
-		dwc3_qcom_select_utmi_clk(qcom);
+		dwc3_qcom_select_pipe_clk(qcom, true);
 
 	qcom->mode = usb_get_dr_mode(dev);
 
@@ -779,6 +820,7 @@ static int dwc3_qcom_pm_resume(struct device *dev)
 	ret = dwc3_qcom_resume(qcom, wakeup);
 	if (ret)
 		return ret;
+	dwc3_qcom_update_pipe_clk(qcom, qcom->current_role);
 
 	ret = dwc3_pm_resume(&qcom->dwc);
 	if (ret)
@@ -825,6 +867,7 @@ static int dwc3_qcom_runtime_resume(struct device *dev)
 	ret = dwc3_qcom_resume(qcom, true);
 	if (ret)
 		return ret;
+	dwc3_qcom_update_pipe_clk(qcom, qcom->current_role);
 
 	return dwc3_runtime_resume(&qcom->dwc);
 }
