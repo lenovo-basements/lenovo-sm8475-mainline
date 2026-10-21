@@ -71,6 +71,7 @@ struct dentry;
  * @update_altmodes: Squashes duplicate DP altmodes
  * @update_connector: Update connector capabilities before registering
  * @connector_status: Updates connector status, called holding connector lock
+ * @set_usb_role: Optional routing of a connector's USB role request
  * @add_partner_altmodes: Start mode selection
  * @remove_partner_altmodes: Clean mode selection
  *
@@ -92,6 +93,7 @@ struct ucsi_operations {
 				struct ucsi_altmode *updated);
 	void (*update_connector)(struct ucsi_connector *con);
 	void (*connector_status)(struct ucsi_connector *con);
+	int (*set_usb_role)(struct ucsi_connector *con, enum usb_role role);
 	void (*add_partner_altmodes)(struct ucsi_connector *con);
 	void (*remove_partner_altmodes)(struct ucsi_connector *con);
 };
@@ -487,6 +489,7 @@ struct ucsi {
 	struct work_struct resume_work;
 	struct delayed_work work;
 	int work_count;
+	int timeout_retries;
 #define UCSI_ROLE_SWITCH_RETRY_PER_HZ	10
 #define UCSI_ROLE_SWITCH_INTERVAL	(HZ / UCSI_ROLE_SWITCH_RETRY_PER_HZ)
 #define UCSI_ROLE_SWITCH_WAIT_COUNT	(10 * UCSI_ROLE_SWITCH_RETRY_PER_HZ)

@@ -5,8 +5,11 @@
 #ifndef __SOC_QCOM_PMIC_GLINK_H__
 #define __SOC_QCOM_PMIC_GLINK_H__
 
+#include <linux/types.h>
+
 struct pmic_glink;
 struct pmic_glink_client;
+struct notifier_block;
 
 #define PMIC_GLINK_OWNER_BATTMGR	32778
 #define PMIC_GLINK_OWNER_USBC		32779
@@ -29,5 +32,13 @@ struct pmic_glink_client *devm_pmic_glink_client_alloc(struct device *dev,
 						       void (*pdr)(void *, int),
 						       void *priv);
 void pmic_glink_client_register(struct pmic_glink_client *client);
+
+/* Notifications carry a bitmap of ports with a connected DisplayPort sink. */
+int pmic_glink_register_dp_hpd_notifier(struct pmic_glink_client *client,
+					struct notifier_block *nb);
+void pmic_glink_unregister_dp_hpd_notifier(struct pmic_glink_client *client,
+					   struct notifier_block *nb);
+void pmic_glink_set_dp_hpd(struct pmic_glink_client *client, unsigned int port,
+			   bool connected);
 
 #endif

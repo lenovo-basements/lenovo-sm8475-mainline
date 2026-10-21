@@ -166,7 +166,7 @@ static void __dwc3_set_mode(struct work_struct *work)
 {
 	struct dwc3 *dwc = work_to_dwc(work);
 	unsigned long flags;
-	int ret;
+	int ret = 0;
 	u32 reg;
 	u32 desired_dr_role;
 	int i;
@@ -176,12 +176,14 @@ static void __dwc3_set_mode(struct work_struct *work)
 	desired_dr_role = dwc->desired_dr_role;
 	spin_unlock_irqrestore(&dwc->lock, flags);
 
-	pm_runtime_get_sync(dwc->dev);
+	ret = pm_runtime_resume_and_get(dwc->dev);
+	if (ret < 0)
+		goto out_unlock;
 
 	if (dwc->current_dr_role == DWC3_GCTL_PRTCAP_OTG)
 		dwc3_otg_update(dwc, 0);
 
-	if (!desired_dr_role)
+	if (!desired_dr_role && !dwc->role_switch_default_none)
 		goto out;
 
 	if (desired_dr_role == dwc->current_dr_role)
@@ -209,13 +211,21 @@ static void __dwc3_set_mode(struct work_struct *work)
 		break;
 	}
 
+	/* A shared data mux must be able to disconnect both controller roles. */
+	if (!desired_dr_role) {
+		spin_lock_irqsave(&dwc->lock, flags);
+		dwc->current_dr_role = 0;
+		spin_unlock_irqrestore(&dwc->lock, flags);
+		goto out;
+	}
+
 	/*
-	 * When current_dr_role is not set, there's no role switching.
-	 * Only perform GCTL.CoreSoftReset when there's DRD role switching.
+	 * An idle mux handoff has stopped the old role but still needs the
+	 * ordinary DRD reset before starting the newly selected connector.
 	 */
-	if (dwc->current_dr_role && ((DWC3_IP_IS(DWC3) ||
-			DWC3_VER_IS_PRIOR(DWC31, 190A)) &&
-			desired_dr_role != DWC3_GCTL_PRTCAP_OTG)) {
+	if ((dwc->current_dr_role || dwc->role_switch_default_none) &&
+	    (DWC3_IP_IS(DWC3) || DWC3_VER_IS_PRIOR(DWC31, 190A)) &&
+	    desired_dr_role != DWC3_GCTL_PRTCAP_OTG) {
 		reg = dwc3_readl(dwc, DWC3_GCTL);
 		reg |= DWC3_GCTL_CORESOFTRESET;
 		dwc3_writel(dwc, DWC3_GCTL, reg);
@@ -282,8 +292,18 @@ static void __dwc3_set_mode(struct work_struct *work)
 		break;
 	}
 
+	if (ret && dwc->role_switch_default_none) {
+		if (desired_dr_role == DWC3_GCTL_PRTCAP_DEVICE)
+			dwc3_event_buffers_cleanup(dwc);
+		spin_lock_irqsave(&dwc->lock, flags);
+		dwc->current_dr_role = 0;
+		spin_unlock_irqrestore(&dwc->lock, flags);
+	}
+
 out:
 	pm_runtime_put_autosuspend(dwc->dev);
+out_unlock:
+	dwc->role_switch_result = ret;
 	mutex_unlock(&dwc->mutex);
 }
 
@@ -2559,6 +2579,10 @@ static int dwc3_suspend_common(struct dwc3 *dwc, pm_message_t msg)
 	}
 
 	switch (dwc->current_dr_role) {
+	case 0:
+		if (dwc->role_switch_default_none && !pm_runtime_suspended(dwc->dev))
+			dwc3_core_exit(dwc);
+		break;
 	case DWC3_GCTL_PRTCAP_DEVICE:
 		if (pm_runtime_suspended(dwc->dev))
 			break;
@@ -2624,6 +2648,15 @@ static int dwc3_resume_common(struct dwc3 *dwc, pm_message_t msg)
 	int		i;
 
 	switch (dwc->current_dr_role) {
+	case 0:
+		if (dwc->role_switch_default_none) {
+			ret = dwc3_core_init_for_resume(dwc);
+			if (ret)
+				return ret;
+			/* Core initialization must not publish an active USB role. */
+			dwc->current_dr_role = 0;
+		}
+		break;
 	case DWC3_GCTL_PRTCAP_DEVICE:
 		ret = dwc3_core_init_for_resume(dwc);
 		if (ret)

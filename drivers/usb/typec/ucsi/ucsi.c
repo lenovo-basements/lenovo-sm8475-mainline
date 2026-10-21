@@ -28,6 +28,9 @@
  */
 #define UCSI_TIMEOUT_MS		10000
 
+/* PPM reset timeouts retried by ucsi_init_work() before giving up */
+#define UCSI_INIT_TIMEOUT_RETRIES	2
+
 /*
  * UCSI_SWAP_TIMEOUT_MS - Timeout for role swap requests
  *
@@ -1326,6 +1329,14 @@ static void ucsi_unregister_partner(struct ucsi_connector *con)
 	con->partner = NULL;
 }
 
+static int ucsi_set_usb_role(struct ucsi_connector *con, enum usb_role role)
+{
+	if (con->ucsi->ops->set_usb_role)
+		return con->ucsi->ops->set_usb_role(con, role);
+
+	return usb_role_switch_set_role(con->usb_role_sw, role);
+}
+
 static void ucsi_partner_change(struct ucsi_connector *con)
 {
 	enum usb_role u_role = USB_ROLE_NONE;
@@ -1373,7 +1384,7 @@ static void ucsi_partner_change(struct ucsi_connector *con)
 		UCSI_CONSTAT(con, PARTNER_FLAG_USB4_GEN4)))))
 		u_role = USB_ROLE_NONE;
 
-	ret = usb_role_switch_set_role(con->usb_role_sw, u_role);
+	ret = ucsi_set_usb_role(con, u_role);
 	if (ret)
 		dev_err(con->ucsi->dev, "con:%d: failed to set usb role:%d\n",
 			con->num, u_role);
@@ -1966,7 +1977,7 @@ static int ucsi_register_port(struct ucsi *ucsi, struct ucsi_connector *con)
 	if (!(UCSI_CONSTAT(con, PARTNER_FLAG_USB)))
 		u_role = USB_ROLE_NONE;
 
-	ret = usb_role_switch_set_role(con->usb_role_sw, u_role);
+	ret = ucsi_set_usb_role(con, u_role);
 	if (ret) {
 		dev_err(ucsi->dev, "con:%d: failed to set usb role:%d\n",
 			con->num, u_role);
@@ -2223,6 +2234,17 @@ static void ucsi_init_work(struct work_struct *work)
 	int ret;
 
 	ret = ucsi_init(ucsi);
+
+	/*
+	 * Firmware-backed PPMs can miss the first reset while their remote
+	 * side is still starting up. Retry a couple of times before failing.
+	 */
+	if (ret == -ETIMEDOUT && ucsi->timeout_retries++ < UCSI_INIT_TIMEOUT_RETRIES) {
+		dev_warn(ucsi->dev, "PPM init timed out, retrying\n");
+		queue_delayed_work(system_dfl_long_wq, &ucsi->work, UCSI_ROLE_SWITCH_INTERVAL);
+		return;
+	}
+
 	if (ret)
 		dev_err_probe(ucsi->dev, ret, "PPM init failed\n");
 
@@ -2356,6 +2378,7 @@ int ucsi_register(struct ucsi *ucsi)
 		UCSI_BCD_GET_MINOR(ucsi->version),
 		UCSI_BCD_GET_SUBMINOR(ucsi->version));
 
+	ucsi->timeout_retries = 0;
 	queue_delayed_work(system_dfl_long_wq, &ucsi->work, 0);
 
 	ucsi_debugfs_register(ucsi);
