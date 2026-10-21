@@ -22,6 +22,10 @@ properties:
   compatible:
     oneOf:
       - items:
+          - const: lenovo,tb320fc-pmic-glink
+          - const: qcom,sm8450-pmic-glink
+          - const: qcom,pmic-glink
+      - items:
           - enum:
               - qcom,glymur-pmic-glink
               - qcom,kaanapali-pmic-glink
@@ -64,6 +68,14 @@ properties:
       The GPIO indication is used to detect the orientation of the Type-C connector.
       The array should contain a gpio entry for each PMIC Glink connector, in reg order.
       It is defined that GPIO active level means "CC2" or Reversed/Flipped orientation.
+
+  port-switch-gpios:
+    maxItems: 1
+    description:
+      Selects the USB data route when the first two connectors share one USB
+      controller. Logical zero selects connector 0 and logical one selects
+      connector 1. The controller must support an idle USB role so that the
+      route can change with both host and peripheral operation stopped.
 
   nvmem-cells:
     minItems: 3
