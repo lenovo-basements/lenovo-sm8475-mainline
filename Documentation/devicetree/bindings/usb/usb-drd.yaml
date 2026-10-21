@@ -58,8 +58,10 @@ properties:
     description:
       Indicates if usb-role-switch is enabled, the device default operation
       mode of controller while usb role is USB_ROLE_NONE.
+      The none mode disconnects both host and peripheral operation, for example
+      while switching a shared controller between connectors.
     $ref: /schemas/types.yaml#/definitions/string
-    enum: [host, peripheral]
+    enum: [host, peripheral, none]
     default: peripheral
 
 additionalProperties: true
