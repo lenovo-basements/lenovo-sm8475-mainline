@@ -2627,6 +2627,8 @@ struct qmp_combo {
 	struct mutex phy_mutex;
 	int init_count;
 	enum qmpphy_mode qmpphy_mode;
+	enum qmpphy_mode pending_mode;
+	bool mode_pending;
 
 	struct phy *usb_phy;
 	enum phy_mode phy_mode;
@@ -2651,6 +2653,9 @@ struct qmp_combo {
 
 	struct typec_mux_dev *mux;
 };
+
+static int qmp_combo_reconfigure_phy(struct qmp_combo *qmp, enum qmpphy_mode new_mode);
+static void qmp_combo_set_mux_mode(struct qmp_combo *qmp, enum qmpphy_mode new_mode);
 
 static void qmp_v3_dp_aux_init(struct qmp_combo *qmp);
 static void qmp_v3_configure_dp_tx(struct qmp_combo *qmp);
@@ -4321,6 +4326,11 @@ static int qmp_combo_dp_power_off(struct phy *phy)
 
 	qmp->dp_powered_on = false;
 
+	if (qmp->mode_pending && !qmp->usb4_init_count) {
+		qmp_combo_set_mux_mode(qmp, qmp->pending_mode);
+		qmp->mode_pending = false;
+	}
+
 	mutex_unlock(&qmp->phy_mutex);
 
 	return 0;
@@ -4439,6 +4449,15 @@ static int qmp_combo_usb_power_off(struct phy *phy)
 			SW_PWRDN);
 
 	return 0;
+}
+
+/* Caller holds phy_mutex; preserve the PHY consumers' init counts. */
+static void qmp_combo_set_mux_mode(struct qmp_combo *qmp, enum qmpphy_mode new_mode)
+{
+	if (qmp->init_count)
+		qmp_combo_reconfigure_phy(qmp, new_mode);
+	else
+		qmp->qmpphy_mode = new_mode;
 }
 
 static int qmp_combo_usb_init(struct phy *phy)
@@ -4625,10 +4644,25 @@ static int qmp_combo_usb4_set_mode(struct phy *phy, enum phy_mode mode, int subm
 	return 0;
 }
 
+static int qmp_combo_usb_validate(struct phy *phy, enum phy_mode mode, int submode,
+				  union phy_configure_opts *opts)
+{
+	struct qmp_combo *qmp = phy_get_drvdata(phy);
+
+	if (mode != PHY_MODE_USB_HOST_SS && mode != PHY_MODE_USB_DEVICE_SS)
+		return -EOPNOTSUPP;
+
+	guard(mutex)(&qmp->phy_mutex);
+
+	/* Four-lane DisplayPort temporarily owns the SuperSpeed lanes. */
+	return qmp->qmpphy_mode == QMPPHY_MODE_DP_ONLY ? -EBUSY : 0;
+}
+
 static const struct phy_ops qmp_combo_usb_phy_ops = {
 	.init		= qmp_combo_usb_init,
 	.exit		= qmp_combo_usb_exit,
 	.set_mode	= qmp_combo_usb_set_mode,
+	.validate	= qmp_combo_usb_validate,
 	.owner		= THIS_MODULE,
 };
 
@@ -5108,11 +5142,6 @@ static int qmp_combo_typec_mux_set(struct typec_mux_dev *mux, struct typec_mux_s
 
 	guard(mutex)(&qmp->phy_mutex);
 
-	if (state->mode == TYPEC_STATE_SAFE) {
-		qmp->qmpphy_mode = QMPPHY_MODE_USB3_ONLY;
-		return 0;
-	}
-
 	if (state->alt)
 		svid = state->alt->svid;
 	else
@@ -5141,7 +5170,9 @@ static int qmp_combo_typec_mux_set(struct typec_mux_dev *mux, struct typec_mux_s
 	if (svid == USB_TYPEC_TBT_SID || (!state->alt && state->mode == TYPEC_MODE_USB4))
 		return 0;
 
-	if (svid == USB_TYPEC_DP_SID) {
+	if (state->mode == TYPEC_STATE_SAFE) {
+		new_mode = QMPPHY_MODE_USB3_ONLY;
+	} else if (svid == USB_TYPEC_DP_SID) {
 		switch (state->mode) {
 		/* DP Only */
 		case TYPEC_DP_STATE_C:
@@ -5163,7 +5194,9 @@ static int qmp_combo_typec_mux_set(struct typec_mux_dev *mux, struct typec_mux_s
 		new_mode = QMPPHY_MODE_USB3_ONLY;
 	}
 
-	if (new_mode == qmp->qmpphy_mode) {
+	qmp->pending_mode = new_mode;
+	qmp->mode_pending = new_mode != qmp->qmpphy_mode;
+	if (!qmp->mode_pending) {
 		dev_dbg(qmp->dev, "typec_mux_set: same qmpphy mode, bail out\n");
 		return 0;
 	}
@@ -5173,11 +5206,10 @@ static int qmp_combo_typec_mux_set(struct typec_mux_dev *mux, struct typec_mux_s
 		return 0;
 	}
 
-	/* The mux still receives Type-C events, even if all PHYs are uninitialized */
-	if (!qmp->init_count)
-		return 0;
+	qmp_combo_set_mux_mode(qmp, new_mode);
+	qmp->mode_pending = false;
 
-	return qmp_combo_reconfigure_phy(qmp, new_mode);
+	return 0;
 }
 
 static void qmp_combo_typec_switch_unregister(void *data)

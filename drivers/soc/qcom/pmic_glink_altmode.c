@@ -174,12 +174,13 @@ static int pmic_glink_altmode_request(struct pmic_glink_altmode *altmode, u32 cm
 	return 0;
 }
 
-static void pmic_glink_altmode_enable_dp(struct pmic_glink_altmode *altmode,
-					 struct pmic_glink_altmode_port *port,
-					 u8 mode, bool hpd_state,
-					 bool hpd_irq)
+static int pmic_glink_altmode_enable_dp(struct pmic_glink_altmode *altmode,
+					struct pmic_glink_altmode_port *port,
+					u8 mode, bool hpd_state,
+					bool hpd_irq)
 {
 	struct typec_displayport_data dp_data = {};
+	int mux_ret;
 	int ret;
 
 	dp_data.status = DP_STATUS_ENABLED;
@@ -194,6 +195,7 @@ static void pmic_glink_altmode_enable_dp(struct pmic_glink_altmode *altmode,
 	port->state.mode = TYPEC_MODAL_STATE(mode);
 
 	ret = typec_mux_set(port->typec_mux, &port->state);
+	mux_ret = ret;
 	if (ret)
 		dev_err(altmode->dev, "failed to switch mux to DP: %d\n", ret);
 
@@ -204,6 +206,8 @@ static void pmic_glink_altmode_enable_dp(struct pmic_glink_altmode *altmode,
 	ret = typec_retimer_set(port->typec_retimer, &port->retimer_state);
 	if (ret)
 		dev_err(altmode->dev, "failed to setup retimer to DP: %d\n", ret);
+
+	return mux_ret ?: ret;
 }
 
 static void pmic_glink_altmode_enable_tbt(struct pmic_glink_altmode *altmode,
@@ -351,6 +355,8 @@ static void pmic_glink_altmode_worker(struct work_struct *work)
 	struct pmic_glink_altmode_port *alt_port = work_to_altmode_port(work);
 	struct pmic_glink_altmode *altmode = alt_port->altmode;
 	enum drm_connector_status conn_status;
+	bool display_connected = false;
+	int ret;
 
 	typec_switch_set(alt_port->typec_switch, alt_port->orientation);
 
@@ -363,10 +369,11 @@ static void pmic_glink_altmode_worker(struct work_struct *work)
 		if (alt_port->mux_ctrl == MUX_CTRL_STATE_NO_CONN) {
 			pmic_glink_altmode_safe(altmode, alt_port);
 		} else {
-			pmic_glink_altmode_enable_dp(altmode, alt_port,
-						     alt_port->mode,
-						     alt_port->hpd_state,
-						     alt_port->hpd_irq);
+			ret = pmic_glink_altmode_enable_dp(altmode, alt_port,
+							   alt_port->mode,
+							   alt_port->hpd_state,
+							   alt_port->hpd_irq);
+			display_connected = !ret && alt_port->hpd_state;
 		}
 
 		if (alt_port->hpd_state)
@@ -389,6 +396,9 @@ static void pmic_glink_altmode_worker(struct work_struct *work)
 			alt_port->mux_ctrl, alt_port->index);
 		pmic_glink_altmode_safe(altmode, alt_port);
 	}
+
+	/* Capability alone does not distinguish a hub from a connected display. */
+	pmic_glink_set_dp_hpd(altmode->client, alt_port->index, display_connected);
 
 	pmic_glink_altmode_request(altmode, ALTMODE_PAN_ACK, alt_port->index);
 }
@@ -582,6 +592,7 @@ static int pmic_glink_altmode_probe(struct auxiliary_device *adev,
 		return -ENOMEM;
 
 	altmode->dev = dev;
+	dev_set_drvdata(dev, altmode);
 
 	match = of_match_device(pmic_glink_altmode_of_quirks, dev->parent);
 	if (match)
@@ -706,9 +717,24 @@ static const struct auxiliary_device_id pmic_glink_altmode_id_table[] = {
 };
 MODULE_DEVICE_TABLE(auxiliary, pmic_glink_altmode_id_table);
 
+static void pmic_glink_altmode_remove(struct auxiliary_device *adev)
+{
+	struct pmic_glink_altmode *altmode = dev_get_drvdata(&adev->dev);
+	unsigned int i;
+
+	disable_work_sync(&altmode->enable_work);
+	for (i = 0; i < ARRAY_SIZE(altmode->ports); i++) {
+		if (!altmode->ports[i].altmode)
+			continue;
+		disable_work_sync(&altmode->ports[i].work);
+		pmic_glink_set_dp_hpd(altmode->client, i, false);
+	}
+}
+
 static struct auxiliary_driver pmic_glink_altmode_driver = {
 	.name = "pmic_glink_altmode",
 	.probe = pmic_glink_altmode_probe,
+	.remove = pmic_glink_altmode_remove,
 	.id_table = pmic_glink_altmode_id_table,
 };
 
