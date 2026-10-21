@@ -10,23 +10,9 @@
 #include "iris_hfi_gen2.h"
 #include "iris_hfi_gen2_packet.h"
 
-/*
- * Compatibility switches for the early VPU2 Gen2 firmware used on SM8475.
- * Keep the current protocol as the default.
- */
-static bool legacy_vpu2_resume;
-module_param(legacy_vpu2_resume, bool, 0644);
-MODULE_PARM_DESC(legacy_vpu2_resume, "Send VPU2 resume commands without a payload");
-
 static bool disable_vpu2_ifpc;
 module_param(disable_vpu2_ifpc, bool, 0644);
 MODULE_PARM_DESC(disable_vpu2_ifpc, "Disable SM8475 firmware power collapse");
-
-static bool iris_hfi_gen2_use_legacy_resume(struct iris_inst *inst)
-{
-	return legacy_vpu2_resume &&
-		of_device_is_compatible(inst->core->dev->of_node, "qcom,sm8250-venus");
-}
 
 #define UNSPECIFIED_COLOR_FORMAT 5
 #define NUM_SYS_INIT_PACKETS 8
@@ -1201,7 +1187,7 @@ static int iris_hfi_gen2_session_resume_drc(struct iris_inst *inst, u32 plane)
 {
 	struct iris_inst_hfi_gen2 *inst_hfi_gen2 = to_iris_inst_hfi_gen2(inst);
 	u32 payload = HFI_CMD_SETTINGS_CHANGE;
-	bool legacy = iris_hfi_gen2_use_legacy_resume(inst);
+	bool legacy = inst->core->iris_firmware_desc->resume_without_payload;
 
 	iris_hfi_gen2_packet_session_command(inst,
 					     HFI_CMD_RESUME,
@@ -1221,7 +1207,7 @@ static int iris_hfi_gen2_session_resume_drain(struct iris_inst *inst, u32 plane)
 {
 	struct iris_inst_hfi_gen2 *inst_hfi_gen2 = to_iris_inst_hfi_gen2(inst);
 	u32 payload = HFI_CMD_DRAIN;
-	bool legacy = iris_hfi_gen2_use_legacy_resume(inst);
+	bool legacy = inst->core->iris_firmware_desc->resume_without_payload;
 
 	iris_hfi_gen2_packet_session_command(inst,
 					     HFI_CMD_RESUME,

@@ -41,10 +41,11 @@ static const struct iris_firmware_desc iris_vpu20_p4_gen1_desc = {
 	.fwname = "qcom/vpu/vpu20_p4.mbn",
 };
 
-static const struct iris_firmware_desc iris_vpu20_p4_gen2_desc = {
+static const struct iris_firmware_desc iris_vpu20_p4_gen2_v2_4_desc = {
 	.firmware_data = &iris_hfi_gen2_data,
 	.get_vpu_buffer_size = iris_vpu_buf_size,
-	.fwname = "qcom/vpu/vpu20_p4.mbn",
+	.fwname = "qcom/vpu/vpu20_p4_gen2_v2_4.mbn",
+	.resume_without_payload = true,
 };
 
 static const u32 iris_fmts_vpu2_dec[] = {
@@ -143,7 +144,7 @@ const struct iris_platform_data sc7280_data = {
 
 const struct iris_platform_data sm8250_data = {
 	.firmware_desc_gen1 = &iris_vpu20_p4_gen1_desc,
-	.firmware_desc_gen2 = &iris_vpu20_p4_gen2_desc,
+	.firmware_desc_gen2 = &iris_vpu20_p4_gen2_v2_4_desc,
 	.vpu_ops = &iris_vpu2_ops,
 	.icc_tbl = iris_icc_info_vpu2,
 	.icc_tbl_size = ARRAY_SIZE(iris_icc_info_vpu2),
