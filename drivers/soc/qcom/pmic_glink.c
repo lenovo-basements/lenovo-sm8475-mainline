@@ -7,6 +7,7 @@
 #include <linux/cleanup.h>
 #include <linux/delay.h>
 #include <linux/module.h>
+#include <linux/notifier.h>
 #include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/rpmsg.h>
@@ -50,6 +51,11 @@ struct pmic_glink {
 	/* serializing clients list updates */
 	spinlock_t client_lock;
 	struct list_head clients;
+
+	/* Serialize display state, subscription replay and notifications. */
+	struct mutex dp_lock;
+	struct blocking_notifier_head dp_notifiers;
+	unsigned long dp_hpd;
 };
 
 static struct pmic_glink *__pmic_glink;
@@ -117,6 +123,60 @@ void pmic_glink_client_register(struct pmic_glink_client *client)
 	spin_unlock_irqrestore(&pg->client_lock, flags);
 }
 EXPORT_SYMBOL_GPL(pmic_glink_client_register);
+
+/* Callbacks must only queue work; do not reenter this interface from one. */
+int pmic_glink_register_dp_hpd_notifier(struct pmic_glink_client *client,
+					struct notifier_block *nb)
+{
+	struct pmic_glink *pg = client->pg;
+	int ret;
+
+	guard(mutex)(&pg->dp_lock);
+	ret = blocking_notifier_chain_register(&pg->dp_notifiers, nb);
+	if (!ret)
+		nb->notifier_call(nb, pg->dp_hpd, NULL);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(pmic_glink_register_dp_hpd_notifier);
+
+void pmic_glink_unregister_dp_hpd_notifier(struct pmic_glink_client *client,
+					   struct notifier_block *nb)
+{
+	struct pmic_glink *pg = client->pg;
+
+	guard(mutex)(&pg->dp_lock);
+	blocking_notifier_chain_unregister(&pg->dp_notifiers, nb);
+}
+EXPORT_SYMBOL_GPL(pmic_glink_unregister_dp_hpd_notifier);
+
+void pmic_glink_set_dp_hpd(struct pmic_glink_client *client, unsigned int port,
+			   bool connected)
+{
+	struct pmic_glink *pg = client->pg;
+	unsigned long state;
+
+	if (port >= BITS_PER_LONG)
+		return;
+
+	guard(mutex)(&pg->dp_lock);
+	/* A queued altmode worker must not resurrect a lost remote service. */
+	connected &= READ_ONCE(pg->client_state) == SERVREG_SERVICE_STATE_UP;
+	state = connected ? pg->dp_hpd | BIT(port) : pg->dp_hpd & ~BIT(port);
+	if (state == pg->dp_hpd)
+		return;
+	pg->dp_hpd = state;
+	blocking_notifier_call_chain(&pg->dp_notifiers, state, NULL);
+}
+EXPORT_SYMBOL_GPL(pmic_glink_set_dp_hpd);
+
+static void pmic_glink_reset_dp_hpd(struct pmic_glink *pg)
+{
+	guard(mutex)(&pg->dp_lock);
+	if (!pg->dp_hpd)
+		return;
+	pg->dp_hpd = 0;
+	blocking_notifier_call_chain(&pg->dp_notifiers, 0, NULL);
+}
 
 int pmic_glink_send(struct pmic_glink_client *client, void *data, size_t len)
 {
@@ -225,11 +285,13 @@ static void pmic_glink_state_notify_clients(struct pmic_glink *pg)
 	}
 
 	if (new_state != pg->client_state) {
+		WRITE_ONCE(pg->client_state, new_state);
+		if (new_state == SERVREG_SERVICE_STATE_DOWN)
+			pmic_glink_reset_dp_hpd(pg);
 		spin_lock_irqsave(&pg->client_lock, flags);
 		list_for_each_entry(client, &pg->clients, node)
 			client->pdr_notify(client->priv, new_state);
 		spin_unlock_irqrestore(&pg->client_lock, flags);
-		pg->client_state = new_state;
 	}
 }
 
@@ -313,6 +375,8 @@ static int pmic_glink_probe(struct platform_device *pdev)
 	INIT_LIST_HEAD(&pg->clients);
 	spin_lock_init(&pg->client_lock);
 	mutex_init(&pg->state_lock);
+	mutex_init(&pg->dp_lock);
+	BLOCKING_INIT_NOTIFIER_HEAD(&pg->dp_notifiers);
 
 	pg->data = of_device_get_match_data(&pdev->dev);
 	if (!pg->data)

@@ -1066,6 +1066,8 @@ struct dwc3_glue_ops {
  * @role_sw: usb_role_switch handle
  * @role_switch_default_mode: default operation mode of controller while
  *			usb role is USB_ROLE_NONE.
+ * @role_switch_default_none: stop both roles and complete role changes synchronously
+ * @role_switch_result: completion status of the last controller role change
  * @role_mux_device: optional board data route for device mode
  * @role_mux_host: optional board data route for host mode
  * @role_mux_active: currently selected, locked data route
@@ -1270,6 +1272,8 @@ struct dwc3 {
 	enum usb_phy_interface	hsphy_mode;
 	struct usb_role_switch	*role_sw;
 	enum usb_dr_mode	role_switch_default_mode;
+	bool			role_switch_default_none;
+	int			role_switch_result;
 	struct mux_state	*role_mux_device;
 	struct mux_state	*role_mux_host;
 	struct mux_state	*role_mux_active;

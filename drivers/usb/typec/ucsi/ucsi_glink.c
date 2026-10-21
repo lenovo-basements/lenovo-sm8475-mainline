@@ -4,8 +4,10 @@
  * Copyright (c) 2023, Linaro Ltd
  */
 #include <linux/auxiliary_bus.h>
+#include <linux/delay.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
+#include <linux/notifier.h>
 #include <linux/of_device.h>
 #include <linux/property.h>
 #include <linux/soc/qcom/pdr.h>
@@ -66,7 +68,15 @@ struct pmic_glink_ucsi {
 
 	struct gpio_desc *port_orientation[PMIC_GLINK_MAX_PORTS];
 	struct gpio_desc *port_switch_gpio;
-	bool port_connected[PMIC_GLINK_MAX_PORTS];
+	struct mutex route_lock; /* serializes the shared data path */
+	struct usb_role_switch *controller;
+	enum usb_role port_role[2];
+	enum usb_role active_role;
+	unsigned int selected_port;
+	bool routing_enabled;
+	bool c1_display;
+	struct notifier_block dp_hpd_nb;
+	struct work_struct route_work;
 
 	struct pmic_glink_client *client;
 
@@ -212,32 +222,6 @@ static void pmic_glink_ucsi_connector_status(struct ucsi_connector *con)
 	struct pmic_glink_ucsi *ucsi = ucsi_get_drvdata(con->ucsi);
 	int orientation;
 
-	if (con->num <= PMIC_GLINK_MAX_PORTS)
-		ucsi->port_connected[con->num - 1] = !!UCSI_CONSTAT(con, CONNECTED);
-
-	dev_info(ucsi->dev, "connector_status con=%d connected=%d status=0x%lx\n",
-		 con->num, !!UCSI_CONSTAT(con, CONNECTED), con->status[0]);
-
-	if (ucsi->port_switch_gpio) {
-		bool c1_connected = ucsi->port_connected[0];
-		bool c2_connected = ucsi->port_connected[1];
-		int target = (!c1_connected && c2_connected) ? 1 : 0;
-		struct usb_role_switch *role_sw = NULL;
-
-		dev_info(ucsi->dev, "switching port mux: c1=%d c2=%d -> target=%d\n",
-			 c1_connected, c2_connected, target);
-		gpiod_set_value_cansleep(ucsi->port_switch_gpio, target);
-
-		if (ucsi->ucsi && ucsi->ucsi->connector)
-			role_sw = ucsi->ucsi->connector[0].usb_role_sw;
-
-		if (role_sw) {
-			if (!c1_connected && c2_connected) {
-				dev_info(ucsi->dev, "driving role_sw to HOST for C2\n");
-				usb_role_switch_set_role(role_sw, USB_ROLE_HOST);
-			}
-		}
-	}
 
 	if (!UCSI_CONSTAT(con, CONNECTED)) {
 		typec_set_orientation(con->port, TYPEC_ORIENTATION_NONE);
@@ -257,6 +241,149 @@ static void pmic_glink_ucsi_connector_status(struct ucsi_connector *con)
 	}
 }
 
+/* Caller holds route_lock; no connector pointers are needed for mode changes. */
+static int pmic_glink_ucsi_update_route(struct pmic_glink_ucsi *ucsi)
+{
+	struct usb_role_switch *controller;
+	enum usb_role role;
+	unsigned int target;
+	int ret;
+
+	if (!ucsi->routing_enabled)
+		return -ESHUTDOWN;
+	controller = ucsi->controller;
+	if (IS_ERR_OR_NULL(controller)) {
+		ret = -ENODEV;
+		return ret;
+	}
+
+	/* Keep C2 data available only while C1 has a connected DP display. */
+	if (READ_ONCE(ucsi->c1_display) && ucsi->port_role[0] == USB_ROLE_HOST &&
+	    ucsi->port_role[1] != USB_ROLE_NONE)
+		target = 1;
+	else if (ucsi->port_role[0] != USB_ROLE_NONE)
+		target = 0;
+	else if (ucsi->port_role[1] != USB_ROLE_NONE)
+		target = 1;
+	else
+		target = ucsi->selected_port;
+
+	if (target != ucsi->selected_port) {
+		ret = usb_role_switch_set_role(controller, USB_ROLE_NONE);
+		if (ret)
+			return ret;
+		ucsi->active_role = usb_role_switch_get_role(controller);
+		/* Refuse a live mux handoff if the controller only emulates NONE. */
+		if (ucsi->active_role != USB_ROLE_NONE) {
+			ret = -EOPNOTSUPP;
+			return ret;
+		}
+		gpiod_set_value_cansleep(ucsi->port_switch_gpio, target);
+		/* Lenovo's downstream mux settling intervals, only on route changes. */
+		msleep(target ? 50 : 10);
+		ucsi->selected_port = target;
+	}
+
+	role = ucsi->port_role[target];
+	if (role != ucsi->active_role) {
+		ret = usb_role_switch_set_role(controller, role);
+		if (ret) {
+			ucsi->active_role = usb_role_switch_get_role(controller);
+			return ret;
+		}
+		ucsi->active_role = role;
+		dev_info(ucsi->dev, "USB data route C%u: %s\n",
+			 target + 1, usb_role_string(role));
+	}
+	return 0;
+}
+
+static void pmic_glink_ucsi_route_work(struct work_struct *work)
+{
+	struct pmic_glink_ucsi *ucsi = container_of(work, struct pmic_glink_ucsi, route_work);
+	int ret;
+
+	mutex_lock(&ucsi->route_lock);
+	ret = pmic_glink_ucsi_update_route(ucsi);
+	mutex_unlock(&ucsi->route_lock);
+	if (ret && ret != -ESHUTDOWN && ret != -ENODEV)
+		dev_warn(ucsi->dev, "display USB route update failed: %d\n", ret);
+}
+
+static int pmic_glink_ucsi_dp_hpd_notify(struct notifier_block *nb,
+					 unsigned long state, void *data)
+{
+	struct pmic_glink_ucsi *ucsi = container_of(nb, struct pmic_glink_ucsi, dp_hpd_nb);
+
+	WRITE_ONCE(ucsi->c1_display, !!(state & BIT(0)));
+	schedule_work(&ucsi->route_work);
+	return NOTIFY_OK;
+}
+
+static void pmic_glink_ucsi_unregister_dp_hpd(void *data)
+{
+	struct pmic_glink_ucsi *ucsi = data;
+
+	pmic_glink_unregister_dp_hpd_notifier(ucsi->client, &ucsi->dp_hpd_nb);
+}
+
+/* The two connectors share one controller; only its selected owner may drive it. */
+static int pmic_glink_ucsi_set_usb_role(struct ucsi_connector *con, enum usb_role role)
+{
+	struct pmic_glink_ucsi *ucsi = ucsi_get_drvdata(con->ucsi);
+	struct usb_role_switch *controller;
+	int ret = 0;
+
+	if (!ucsi->port_switch_gpio || con->num > ARRAY_SIZE(ucsi->port_role))
+		return usb_role_switch_set_role(con->usb_role_sw, role);
+	if (!con->num)
+		return -EINVAL;
+
+	mutex_lock(&ucsi->route_lock);
+	if (!ucsi->routing_enabled) {
+		ret = -ESHUTDOWN;
+		goto out;
+	}
+
+	/* A charger or a DP-only partner must not claim the USB data route. */
+	if (!UCSI_CONSTAT(con, CONNECTED) || !UCSI_CONSTAT(con, PARTNER_FLAG_USB))
+		role = USB_ROLE_NONE;
+	ucsi->port_role[con->num - 1] = role;
+
+	/* Initial port callbacks precede publication of ucsi->connector. */
+	if (!ucsi->controller && con->num == 1) {
+		controller = fwnode_usb_role_switch_get(con->typec_cap.fwnode);
+		if (IS_ERR(controller)) {
+			ret = PTR_ERR(controller);
+			goto out;
+		}
+		ucsi->controller = controller;
+	}
+	ret = pmic_glink_ucsi_update_route(ucsi);
+out:
+	mutex_unlock(&ucsi->route_lock);
+	return ret;
+}
+
+static void pmic_glink_ucsi_stop_routing(struct pmic_glink_ucsi *ucsi)
+{
+	int ret;
+
+	mutex_lock(&ucsi->route_lock);
+	ucsi->routing_enabled = false;
+	if (ucsi->controller) {
+		ret = usb_role_switch_set_role(ucsi->controller, USB_ROLE_NONE);
+		if (ret)
+			dev_warn(ucsi->dev, "failed to stop USB data route: %d\n", ret);
+		else
+			ucsi->active_role = USB_ROLE_NONE;
+		usb_role_switch_put(ucsi->controller);
+		ucsi->controller = NULL;
+	}
+	memset(ucsi->port_role, 0, sizeof(ucsi->port_role));
+	mutex_unlock(&ucsi->route_lock);
+}
+
 static const struct ucsi_operations pmic_glink_ucsi_ops = {
 	.read_version = pmic_glink_ucsi_read_version,
 	.read_cci = pmic_glink_ucsi_read_cci,
@@ -266,6 +393,7 @@ static const struct ucsi_operations pmic_glink_ucsi_ops = {
 	.async_control = pmic_glink_ucsi_async_control,
 	.update_connector = pmic_glink_ucsi_update_connector,
 	.connector_status = pmic_glink_ucsi_connector_status,
+	.set_usb_role = pmic_glink_ucsi_set_usb_role,
 };
 
 static void pmic_glink_ucsi_read_ack(struct pmic_glink_ucsi *ucsi, const void *data, int len)
@@ -351,9 +479,20 @@ static void pmic_glink_ucsi_register(struct work_struct *work)
 	spin_unlock_irqrestore(&ucsi->state_lock, flags);
 
 	if (!ucsi->ucsi_registered && pd_running) {
-		ucsi_register(ucsi->ucsi);
+		int ret;
+
+		mutex_lock(&ucsi->route_lock);
+		ucsi->routing_enabled = true;
+		mutex_unlock(&ucsi->route_lock);
+		ret = ucsi_register(ucsi->ucsi);
+		if (ret) {
+			pmic_glink_ucsi_stop_routing(ucsi);
+			dev_err(ucsi->dev, "UCSI registration failed: %d\n", ret);
+			return;
+		}
 		ucsi->ucsi_registered = true;
 	} else if (ucsi->ucsi_registered && !pd_running) {
+		pmic_glink_ucsi_stop_routing(ucsi);
 		ucsi_unregister(ucsi->ucsi);
 		ucsi->ucsi_registered = false;
 	}
@@ -388,43 +527,19 @@ static void pmic_glink_ucsi_pdr_notify(void *priv, int state)
 	schedule_work(&ucsi->register_work);
 }
 
+/* Observation only: manual writes must not bypass data-role arbitration. */
 static ssize_t usb_port_mux_show(struct device *dev, struct device_attribute *attr, char *buf)
 {
 	struct pmic_glink_ucsi *ucsi = dev_get_drvdata(dev);
-	int val = 0;
-
-	if (ucsi->port_switch_gpio)
-		val = gpiod_get_value_cansleep(ucsi->port_switch_gpio);
-
-	return sysfs_emit(buf, "%d\n", val);
-}
-
-static ssize_t usb_port_mux_store(struct device *dev, struct device_attribute *attr,
-				  const char *buf, size_t count)
-{
-	struct pmic_glink_ucsi *ucsi = dev_get_drvdata(dev);
 	int val;
-	int ret;
 
-	ret = kstrtoint(buf, 10, &val);
-	if (ret)
-		return ret;
+	mutex_lock(&ucsi->route_lock);
+	val = gpiod_get_value_cansleep(ucsi->port_switch_gpio);
+	mutex_unlock(&ucsi->route_lock);
 
-	if (ucsi->port_switch_gpio) {
-		struct usb_role_switch *role_sw = NULL;
-
-		gpiod_set_value_cansleep(ucsi->port_switch_gpio, !!val);
-		dev_info(dev, "usb_port_mux manually set to %d\n", !!val);
-
-		if (ucsi->ucsi && ucsi->ucsi->connector)
-			role_sw = ucsi->ucsi->connector[0].usb_role_sw;
-		if (role_sw && val)
-			usb_role_switch_set_role(role_sw, USB_ROLE_HOST);
-	}
-
-	return count;
+	return val < 0 ? val : sysfs_emit(buf, "%d\n", val);
 }
-static DEVICE_ATTR_RW(usb_port_mux);
+static DEVICE_ATTR_RO(usb_port_mux);
 
 static void pmic_glink_ucsi_destroy(void *data)
 {
@@ -435,6 +550,8 @@ static void pmic_glink_ucsi_destroy(void *data)
 	/* Drain the work items before ucsi_destroy() frees the ucsi instance */
 	cancel_work_sync(&ucsi->notify_work);
 	cancel_work_sync(&ucsi->register_work);
+	cancel_work_sync(&ucsi->route_work);
+	pmic_glink_ucsi_stop_routing(ucsi);
 
 	/* Protect to make sure we're not in a middle of a transaction from a glink callback */
 	mutex_lock(&ucsi->lock);
@@ -477,10 +594,12 @@ static int pmic_glink_ucsi_probe(struct auxiliary_device *adev,
 
 	INIT_WORK(&ucsi->notify_work, pmic_glink_ucsi_notify);
 	INIT_WORK(&ucsi->register_work, pmic_glink_ucsi_register);
+	INIT_WORK(&ucsi->route_work, pmic_glink_ucsi_route_work);
 	init_completion(&ucsi->read_ack);
 	init_completion(&ucsi->write_ack);
 	spin_lock_init(&ucsi->state_lock);
 	mutex_init(&ucsi->lock);
+	mutex_init(&ucsi->route_lock);
 
 	ucsi->ucsi = ucsi_create(dev, &pmic_glink_ucsi_ops);
 	if (IS_ERR(ucsi->ucsi))
@@ -504,11 +623,11 @@ static int pmic_glink_ucsi_probe(struct auxiliary_device *adev,
 		return dev_err_probe(dev, PTR_ERR(ucsi->port_switch_gpio),
 				     "unable to acquire port-switch gpio\n");
 
-	dev_info(dev, "port-switch GPIO: %p\n", ucsi->port_switch_gpio);
-
-	ret = device_create_file(dev, &dev_attr_usb_port_mux);
-	if (ret)
-		dev_warn(dev, "failed to create usb_port_mux sysfs file: %d\n", ret);
+	if (ucsi->port_switch_gpio) {
+		ret = device_create_file(dev, &dev_attr_usb_port_mux);
+		if (ret)
+			return ret;
+	}
 
 	device_for_each_child_node_scoped(dev, fwnode) {
 		struct gpio_desc *desc;
@@ -545,6 +664,16 @@ static int pmic_glink_ucsi_probe(struct auxiliary_device *adev,
 	if (IS_ERR(ucsi->client))
 		return PTR_ERR(ucsi->client);
 
+	if (ucsi->port_switch_gpio) {
+		ucsi->dp_hpd_nb.notifier_call = pmic_glink_ucsi_dp_hpd_notify;
+		ret = pmic_glink_register_dp_hpd_notifier(ucsi->client, &ucsi->dp_hpd_nb);
+		if (ret)
+			return ret;
+		ret = devm_add_action_or_reset(dev, pmic_glink_ucsi_unregister_dp_hpd, ucsi);
+		if (ret)
+			return ret;
+	}
+
 	pmic_glink_client_register(ucsi->client);
 
 	return 0;
@@ -557,9 +686,11 @@ static void pmic_glink_ucsi_remove(struct auxiliary_device *adev)
 	/* Callbacks can queue work until devres releases the client */
 	disable_work_sync(&ucsi->notify_work);
 	disable_work_sync(&ucsi->register_work);
+	disable_work_sync(&ucsi->route_work);
 
 	/* register_work may have unregistered the instance already */
 	if (ucsi->ucsi_registered) {
+		pmic_glink_ucsi_stop_routing(ucsi);
 		ucsi->ucsi_registered = false;
 		ucsi_unregister(ucsi->ucsi);
 	}

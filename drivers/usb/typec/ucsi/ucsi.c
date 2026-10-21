@@ -1326,6 +1326,14 @@ static void ucsi_unregister_partner(struct ucsi_connector *con)
 	con->partner = NULL;
 }
 
+static int ucsi_set_usb_role(struct ucsi_connector *con, enum usb_role role)
+{
+	if (con->ucsi->ops->set_usb_role)
+		return con->ucsi->ops->set_usb_role(con, role);
+
+	return usb_role_switch_set_role(con->usb_role_sw, role);
+}
+
 static void ucsi_partner_change(struct ucsi_connector *con)
 {
 	enum usb_role u_role = USB_ROLE_NONE;
@@ -1373,7 +1381,7 @@ static void ucsi_partner_change(struct ucsi_connector *con)
 		UCSI_CONSTAT(con, PARTNER_FLAG_USB4_GEN4)))))
 		u_role = USB_ROLE_NONE;
 
-	ret = usb_role_switch_set_role(con->usb_role_sw, u_role);
+	ret = ucsi_set_usb_role(con, u_role);
 	if (ret)
 		dev_err(con->ucsi->dev, "con:%d: failed to set usb role:%d\n",
 			con->num, u_role);
@@ -1966,7 +1974,7 @@ static int ucsi_register_port(struct ucsi *ucsi, struct ucsi_connector *con)
 	if (!(UCSI_CONSTAT(con, PARTNER_FLAG_USB)))
 		u_role = USB_ROLE_NONE;
 
-	ret = usb_role_switch_set_role(con->usb_role_sw, u_role);
+	ret = ucsi_set_usb_role(con, u_role);
 	if (ret) {
 		dev_err(ucsi->dev, "con:%d: failed to set usb role:%d\n",
 			con->num, u_role);
