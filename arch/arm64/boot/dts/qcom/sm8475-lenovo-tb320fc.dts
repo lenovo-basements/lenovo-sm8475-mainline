@@ -646,6 +646,14 @@
 	compatible = "qcom,sm8475-camcc", "qcom,sm8450-camcc";
 };
 
+&crypto {
+	status = "disabled";
+};
+
+&cryptobam {
+	status = "disabled";
+};
+
 &remoteproc_adsp {
 	firmware-name = "qcom/lenovo/tb320fc/adsp/adsp.mdt";
 	status = "okay";
