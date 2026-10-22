@@ -3013,6 +3013,15 @@ static struct gdsc titan_top_gdsc = {
 	.pwrsts = PWRSTS_RET_ON,
 };
 
+static struct gdsc sm8475_titan_top_gdsc = {
+	.gdscr = 0x131dc,
+	.pd = {
+		.name = "titan_top_gdsc",
+	},
+	.flags = RPM_ALWAYS_ON,
+	.pwrsts = PWRSTS_RET_ON,
+};
+
 static struct gdsc *cam_cc_sm8450_gdscs[] = {
 	[BPS_GDSC] = &bps_gdsc,
 	[IPE_0_GDSC] = &ipe_0_gdsc,
@@ -3051,11 +3060,27 @@ static const struct of_device_id cam_cc_sm8450_match_table[] = {
 };
 MODULE_DEVICE_TABLE(of, cam_cc_sm8450_match_table);
 
+static void cam_cc_sm8475_select_gdscs(void)
+{
+	unsigned int i;
+
+	for (i = 0; i < ARRAY_SIZE(cam_cc_sm8450_gdscs); i++) {
+		struct gdsc *sc = cam_cc_sm8450_gdscs[i];
+
+		if (sc == &titan_top_gdsc)
+			cam_cc_sm8450_gdscs[i] = &sm8475_titan_top_gdsc;
+		else if (sc->parent == &titan_top_gdsc.pd)
+			sc->parent = &sm8475_titan_top_gdsc.pd;
+	}
+}
+
 static int cam_cc_sm8450_probe(struct platform_device *pdev)
 {
 	int ret;
 
 	if (of_device_is_compatible(pdev->dev.of_node, "qcom,sm8475-camcc")) {
+		cam_cc_sm8475_select_gdscs();
+
 		/* Update CAMCC PLL0 */
 		cam_cc_pll0.regs = clk_alpha_pll_regs[CLK_ALPHA_PLL_TYPE_LUCID_OLE];
 		cam_cc_pll0_out_even.regs = clk_alpha_pll_regs[CLK_ALPHA_PLL_TYPE_LUCID_OLE];

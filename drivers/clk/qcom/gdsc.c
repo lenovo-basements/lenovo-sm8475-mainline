@@ -506,8 +506,8 @@ static int gdsc_init(struct gdsc *sc)
 				goto err_disable_supply;
 		}
 
-	} else if (sc->flags & ALWAYS_ON) {
-		/* If ALWAYS_ON GDSCs are not ON, turn them ON */
+	} else if (sc->flags & (ALWAYS_ON | RPM_ALWAYS_ON)) {
+		/* Always-on GDSCs must start powered, including runtime-only ones. */
 		ret = gdsc_enable(&sc->pd);
 		if (ret)
 			return ret;
@@ -521,6 +521,8 @@ static int gdsc_init(struct gdsc *sc)
 
 	if (sc->flags & ALWAYS_ON)
 		sc->pd.flags |= GENPD_FLAG_ALWAYS_ON;
+	if (sc->flags & RPM_ALWAYS_ON)
+		sc->pd.flags |= GENPD_FLAG_RPM_ALWAYS_ON;
 	if (!sc->pd.power_off)
 		sc->pd.power_off = gdsc_disable;
 	if (!sc->pd.power_on)
