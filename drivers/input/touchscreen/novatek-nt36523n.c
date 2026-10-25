@@ -37,6 +37,8 @@
 #define NVT_TRANSFER_SIZE	1024
 #define NVT_FIRMWARE_BURST_SIZE	(63 * 1024)
 #define NVT_STARTUP_DELAY_MS	50
+#define NVT_STARTUP_RETRY_MS	100
+#define NVT_STARTUP_ATTEMPTS	3
 #define NVT_REPORT_SIZE		108
 #define NVT_CHECKSUM_SIZE	65
 #define NVT_MAX_CONTACTS		10
@@ -80,6 +82,7 @@ struct nvt_ts {
 	u8 recovery_frames;
 	u8 recovery_attempts;
 	u8 io_failures;
+	u8 startup_attempts;
 	u8 *tx;
 	u8 *rx;
 	size_t tx_size;
@@ -420,18 +423,6 @@ static int nvt_download_firmware(struct nvt_ts *ts)
 	return ts->pen ? nvt_configure_pen(ts) : 0;
 }
 
-static int nvt_load_firmware(struct nvt_ts *ts)
-{
-	int attempt, error;
-
-	for (attempt = 0; attempt < 3; attempt++) {
-		error = nvt_download_firmware(ts);
-		if (!error || error == -ENODEV)
-			break;
-	}
-	return error;
-}
-
 static void nvt_release_pen(struct nvt_ts *ts)
 {
 	if (!ts->pen)
@@ -632,7 +623,7 @@ static irqreturn_t nvt_irq(int irq, void *context)
 		ts->invalid_report = false;
 		cancel_delayed_work(&ts->release_work);
 	} else {
-		if (ts->active_slots) {
+		if (ts->active_slots || ts->pen) {
 			ts->invalid_report = true;
 			schedule_delayed_work(&ts->release_work, msecs_to_jiffies(250));
 		}
@@ -652,7 +643,7 @@ static int nvt_start(struct nvt_ts *ts)
 		return 0;
 
 	mutex_lock(&ts->io_lock);
-	error = nvt_load_firmware(ts);
+	error = nvt_download_firmware(ts);
 	if (!error) {
 		ts->running = true;
 		ts->faulted = false;
@@ -672,18 +663,27 @@ static void nvt_startup_work(struct work_struct *work)
 {
 	struct nvt_ts *ts = container_of(to_delayed_work(work), struct nvt_ts,
 				       startup_work);
+	int error;
 
 	mutex_lock(&ts->state_lock);
-	if (ts->prepared && ts->enabled && !ts->suspended)
-		nvt_start(ts);
+	if (ts->prepared && ts->enabled && !ts->suspended && !ts->running) {
+		ts->startup_attempts++;
+		error = nvt_start(ts);
+		if (error && error != -ENODEV &&
+		    ts->startup_attempts < NVT_STARTUP_ATTEMPTS)
+			mod_delayed_work(system_wq, &ts->startup_work,
+					 msecs_to_jiffies(NVT_STARTUP_RETRY_MS));
+	}
 	mutex_unlock(&ts->state_lock);
 }
 
 static void nvt_queue_startup(struct nvt_ts *ts)
 {
-	if (ts->prepared && ts->enabled && !ts->suspended && !ts->running)
+	if (ts->prepared && ts->enabled && !ts->suspended && !ts->running) {
+		ts->startup_attempts = 0;
 		mod_delayed_work(system_wq, &ts->startup_work,
 				 msecs_to_jiffies(NVT_STARTUP_DELAY_MS));
+	}
 }
 
 static void nvt_stop(struct nvt_ts *ts)

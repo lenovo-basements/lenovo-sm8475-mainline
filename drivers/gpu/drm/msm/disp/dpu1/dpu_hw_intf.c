@@ -11,6 +11,8 @@
 #include "dpu_trace.h"
 
 #include <linux/iopoll.h>
+#include <linux/limits.h>
+#include <linux/math64.h>
 
 #include <drm/drm_managed.h>
 
@@ -605,33 +607,29 @@ static int dpu_hw_intf_setup_avr(struct dpu_hw_intf *intf,
 				 const struct dpu_hw_intf_timing_params *p,
 				 u32 default_fps, u32 min_fps)
 {
-	struct dpu_hw_blk_reg_map *c;
-	u32 hsync_period, vsync_period;
-	u32 diff_fps;
-	u32 vsync_period_slow;
+	u64 hsync_period, vsync_period, vsync_period_slow;
 	u32 avr_vtotal;
-	u32 add_porches = 0;
 
-	if (!intf || !p || !default_fps || !min_fps)
+	if (!intf || !p || !default_fps || !min_fps || min_fps > default_fps)
 		return -EINVAL;
 
-	if (min_fps > default_fps)
-		min_fps = default_fps;
-
-	c = &intf->hw;
-	diff_fps = default_fps - min_fps;
-	hsync_period = p->hsync_pulse_width + p->h_back_porch +
+	hsync_period = (u64)p->hsync_pulse_width + p->h_back_porch +
 		       p->width + p->h_front_porch;
-	vsync_period = p->vsync_pulse_width + p->v_back_porch +
+	vsync_period = (u64)p->vsync_pulse_width + p->v_back_porch +
 		       p->height + p->v_front_porch;
+	if (!hsync_period || !vsync_period)
+		return -EINVAL;
+	/* These bounds also keep the scaling multiplication within u64. */
+	if (hsync_period > U32_MAX || vsync_period > U32_MAX)
+		return -ERANGE;
 
-	if (diff_fps)
-		add_porches = mult_frac(vsync_period, diff_fps, min_fps);
-
-	vsync_period_slow = vsync_period + add_porches;
+	vsync_period_slow = div_u64(vsync_period * default_fps, min_fps);
+	/* INTF_AVR_VTOTAL counts pixel clocks in a 32-bit register. */
+	if (vsync_period_slow > div_u64(U32_MAX, hsync_period))
+		return -ERANGE;
 	avr_vtotal = vsync_period_slow * hsync_period;
 
-	DPU_REG_WRITE(c, INTF_AVR_VTOTAL, avr_vtotal);
+	DPU_REG_WRITE(&intf->hw, INTF_AVR_VTOTAL, avr_vtotal);
 
 	return 0;
 }
@@ -713,8 +711,10 @@ struct dpu_hw_intf *dpu_hw_intf_init(struct drm_device *dev,
 	c->ops.setup_misr = dpu_hw_intf_setup_misr;
 	c->ops.collect_misr = dpu_hw_intf_collect_misr;
 
-	if (mdss_rev->core_major_ver >= 5) {
+	if (mdss_rev->core_major_ver >= 5)
 		c->ops.bind_pingpong_blk = dpu_hw_intf_bind_pingpong_blk;
+
+	if (cfg->has_avr) {
 		c->ops.setup_avr = dpu_hw_intf_setup_avr;
 		c->ops.enable_avr = dpu_hw_intf_enable_avr;
 		c->ops.trigger_avr = dpu_hw_intf_trigger_avr;

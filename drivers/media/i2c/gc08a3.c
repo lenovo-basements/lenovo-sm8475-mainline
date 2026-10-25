@@ -1306,7 +1306,6 @@ static void gc08a3_remove(struct i2c_client *client)
 
 static const struct of_device_id gc08a3_of_match[] = {
 	{ .compatible = "galaxycore,gc08a3" },
-	{ .compatible = "samsung,s5k4h7" },
 	{}
 };
 MODULE_DEVICE_TABLE(of, gc08a3_of_match);

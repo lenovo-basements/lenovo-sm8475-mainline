@@ -313,14 +313,19 @@ static const struct v4l2_ctrl_ops s5k4h7_ctrl_ops = {
 
 static int s5k4h7_init_controls(struct s5k4h7 *s5k4h7)
 {
+	struct v4l2_fwnode_device_properties props;
 	struct v4l2_ctrl_handler *ctrl_hdlr;
 	const struct s5k4h7_mode *mode = s5k4h7->mode;
 	s64 exposure_max, hblank, vblank;
 	u64 pixel_rate_val;
 	int ret;
 
+	ret = v4l2_fwnode_device_parse(s5k4h7->dev, &props);
+	if (ret)
+		return ret;
+
 	ctrl_hdlr = &s5k4h7->ctrl_handler;
-	ret = v4l2_ctrl_handler_init(ctrl_hdlr, 8);
+	ret = v4l2_ctrl_handler_init(ctrl_hdlr, 10);
 	if (ret)
 		return ret;
 
@@ -381,13 +386,21 @@ static int s5k4h7_init_controls(struct s5k4h7 *s5k4h7)
 	if (ctrl_hdlr->error) {
 		ret = ctrl_hdlr->error;
 		dev_err(s5k4h7->dev, "failed to add controls: %d\n", ret);
-		v4l2_ctrl_handler_free(ctrl_hdlr);
-		return ret;
+		goto error;
 	}
+
+	ret = v4l2_ctrl_new_fwnode_properties(ctrl_hdlr, &s5k4h7_ctrl_ops,
+					      &props);
+	if (ret)
+		goto error;
 
 	s5k4h7->sd.ctrl_handler = ctrl_hdlr;
 
 	return 0;
+
+error:
+	v4l2_ctrl_handler_free(ctrl_hdlr);
+	return ret;
 }
 
 static int s5k4h7_enable_streams(struct v4l2_subdev *sd,

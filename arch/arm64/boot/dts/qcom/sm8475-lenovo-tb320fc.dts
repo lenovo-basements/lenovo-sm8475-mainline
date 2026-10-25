@@ -544,7 +544,8 @@
 
 / {
 	pmic-glink {
-		compatible = "qcom,sm8450-pmic-glink", "qcom,pmic-glink";
+		compatible = "lenovo,tb320fc-pmic-glink", "qcom,sm8450-pmic-glink",
+			     "qcom,pmic-glink";
 		#address-cells = <1>;
 		#size-cells = <0>;
 		port-switch-gpios = <&tlmm 88 GPIO_ACTIVE_HIGH>;
@@ -978,7 +979,7 @@
 	compatible = "qcom,sm8475-qmp-ufs-phy";
 	reg = <0 0x01d80000 0 0x2000>;
 	vdda-phy-supply = <&vreg_l5b_0p88>;
-	vdda-pll-supply = <&vreg_l6b_1p2>;
+	vdda-pll-supply = <&vreg_l10c_1p2>;
 	status = "okay";
 };
 
@@ -1125,6 +1126,8 @@
 	camera@36 {
 		compatible = "ovti,ov13b10";
 		reg = <0x36>;
+		orientation = <1>;
+		rotation = <270>;
 
 		clocks = <&camcc CAM_CC_MCLK0_CLK>;
 		assigned-clocks = <&camcc CAM_CC_MCLK0_CLK>;
@@ -1150,8 +1153,10 @@
 
 &cci0_i2c1 {
 	camera@10 {
-		compatible = "samsung,s5k4h7", "galaxycore,gc08a3";
+		compatible = "samsung,s5k4h7";
 		reg = <0x10>;
+		orientation = <0>;
+		rotation = <90>;
 
 		clocks = <&camcc CAM_CC_MCLK2_CLK>;
 		assigned-clocks = <&camcc CAM_CC_MCLK2_CLK>;
@@ -1183,7 +1188,7 @@
 
 &cci1_i2c0 {
 	camera@36 {
-		compatible = "smartsens,sc202cs", "galaxycore,gc02m1";
+		compatible = "smartsens,sc202cs";
 		reg = <0x36>;
 
 		clocks = <&camcc CAM_CC_MCLK1_CLK>;
