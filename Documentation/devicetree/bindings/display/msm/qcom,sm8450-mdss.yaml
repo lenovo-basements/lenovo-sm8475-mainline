@@ -70,7 +70,9 @@ patternProperties:
 
     properties:
       compatible:
-        const: qcom,sm8450-dsi-phy-5nm
+        enum:
+          - qcom,sm8450-dsi-phy-5nm
+          - qcom,sm8475-dsi-phy-4nm
 
 required:
   - compatible

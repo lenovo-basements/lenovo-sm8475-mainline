@@ -19,7 +19,14 @@ allOf:
 
 properties:
   compatible:
-    const: kinetic,ktz8866
+    oneOf:
+      - const: kinetic,ktz8866
+      - items:
+          - enum:
+              # Lenovo Legion Y700 Gen 2: boost inductor, sink current and LCD
+              # bias outputs differ from the chip defaults
+              - lenovo,tb320fc-ktz8866
+          - const: kinetic,ktz8866
 
   reg:
     maxItems: 1
