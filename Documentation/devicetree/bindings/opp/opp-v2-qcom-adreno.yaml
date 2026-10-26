@@ -49,6 +49,14 @@ patternProperties:
           via 'HFI_H2F_MSG_ACD' packet.
         $ref: /schemas/types.yaml#/definitions/uint32
 
+      qcom,opp-cx-level:
+        description: |
+          RPMh CX rail level (one of the RPMH_REGULATOR_LEVEL_* values) that
+          has to be held while the GPU runs at this OPP. The GMU votes it on
+          behalf of the GPU, next to the GX level from opp-level. Only needed
+          on SoCs where CX does not follow GX one-to-one.
+        $ref: /schemas/types.yaml#/definitions/uint32
+
     required:
       - opp-hz
       - opp-level
