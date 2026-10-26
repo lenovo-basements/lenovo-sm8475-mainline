@@ -26,6 +26,10 @@ properties:
           - enum:
               - lenovo,j606f-boe-nt36523w
           - const: novatek,nt36523w
+      - items:
+          - enum:
+              - lenovo,tb320fc-nt36523n
+          - const: novatek,nt36523n
 
   reg:
     maxItems: 1
@@ -36,6 +40,12 @@ properties:
 
   vddio-supply:
     description: regulator that supplies the I/O voltage
+
+  vddpos-supply:
+    description: positive analogue supply (AVDD) of the panel
+
+  vddneg-supply:
+    description: negative analogue supply (AVEE) of the panel
 
 required:
   - compatible

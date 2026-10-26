@@ -1132,6 +1132,7 @@ properties:
       - items:
           - enum:
               - lenovo,tb320fc
+          - const: qcom,sm8475
           - const: qcom,sm8450
 
       - items:

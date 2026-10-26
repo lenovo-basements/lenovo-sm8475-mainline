@@ -215,6 +215,7 @@ allOf:
               - qcom,sar2130p-qmp-usb3-dp-phy
               - qcom,sc8280xp-qmp-usb43dp-phy
               - qcom,sm6350-qmp-usb3-dp-phy
+              - qcom,sm8475-qmp-usb3-dp-phy
               - qcom,sm8550-qmp-usb3-dp-phy
               - qcom,sm8650-qmp-usb3-dp-phy
               - qcom,sm8750-qmp-usb3-dp-phy
