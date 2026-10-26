@@ -162,6 +162,47 @@
 
 &xbl_ramdump_mem { reg = <0 0x80640000 0 0x1c0000>; };
 &uefi_log_mem { reg = <0 0x808e4000 0 0x10000>; };
+
+&cpu0 {
+	capacity-dmips-mhz = <1024>;
+	dynamic-power-coefficient = <100>;
+};
+
+&cpu1 {
+	capacity-dmips-mhz = <1024>;
+	dynamic-power-coefficient = <100>;
+};
+
+&cpu2 {
+	capacity-dmips-mhz = <1024>;
+	dynamic-power-coefficient = <100>;
+};
+
+&cpu3 {
+	capacity-dmips-mhz = <1024>;
+	dynamic-power-coefficient = <100>;
+};
+
+&cpu4 {
+	capacity-dmips-mhz = <2253>;
+	dynamic-power-coefficient = <257>;
+};
+
+&cpu5 {
+	capacity-dmips-mhz = <2253>;
+	dynamic-power-coefficient = <257>;
+};
+
+&cpu6 {
+	capacity-dmips-mhz = <2253>;
+	dynamic-power-coefficient = <257>;
+};
+
+&cpu7 {
+	capacity-dmips-mhz = <2386>;
+	dynamic-power-coefficient = <509>;
+};
+
 &gcc { compatible = "qcom,sm8475-gcc"; };
 
 &apps_rsc {
@@ -247,7 +288,7 @@
 			regulator-name = "vreg_bob";
 			regulator-min-microvolt = <3008000>;
 			regulator-max-microvolt = <3960000>;
-			regulator-initial-mode = <RPMH_REGULATOR_MODE_AUTO>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
 		};
 		vreg_l4c_1p8: ldo4 {
 			regulator-name = "vreg_l4c_1p8";
@@ -444,7 +485,6 @@
 		function = "gpio";
 		drive-strength = <8>;
 		bias-pull-up;
-		input-enable;
 	};
 
 	camera_rear_mclk: camera-rear-mclk-state {
@@ -537,7 +577,8 @@
 
 / {
 	pmic-glink {
-		compatible = "qcom,sm8450-pmic-glink", "qcom,pmic-glink";
+		compatible = "lenovo,tb320fc-pmic-glink", "qcom,sm8450-pmic-glink",
+			     "qcom,pmic-glink";
 		#address-cells = <1>;
 		#size-cells = <0>;
 		port-switch-gpios = <&tlmm 88 GPIO_ACTIVE_HIGH>;
@@ -603,9 +644,9 @@
 
 &usb_1_qmpphy {
 	compatible = "qcom,sm8475-qmp-usb3-dp-phy";
+	power-domains = <&gcc USB30_PRIM_GDSC>;
 	vdda-phy-supply = <&vreg_l1b_0p912>;
 	vdda-pll-supply = <&vreg_l10c_1p2>;
-	power-domains = <&gcc USB30_PRIM_GDSC>;
 	status = "okay";
 };
 
@@ -636,13 +677,9 @@
 };
 
 &camcc {
-	compatible = "qcom,sm8475-camcc", "qcom,sm8450-camcc";
+	compatible = "qcom,sm8475-camcc";
 };
 
-&remoteproc_adsp {
-	firmware-name = "qcom/lenovo/tb320fc/adsp/adsp.mdt";
-	status = "okay";
-};
 
 &crypto {
 	status = "disabled";
@@ -650,6 +687,12 @@
 
 &cryptobam {
 	status = "disabled";
+};
+
+&remoteproc_adsp {
+	firmware-name = "qcom/lenovo/tb320fc/adsp/adsp.mdt";
+	status = "okay";
+};
 
 &remoteproc_cdsp {
 	firmware-name = "qcom/lenovo/tb320fc/cdsp/cdsp.mdt";
@@ -691,7 +734,6 @@
 		function = "gpio";
 		drive-strength = <2>;
 		bias-pull-up;
-		input-enable;
 	};
 
 	cs35l45_irq_default: cs35l45-irq-default-state {
@@ -861,6 +903,7 @@
 };
 
 &pcie0_phy {
+	compatible = "qcom,sm8475-qmp-gen3x1-pcie-phy";
 	vdda-phy-supply = <&vreg_l5b_0p88>;
 	vdda-pll-supply = <&vreg_l10c_1p2>;
 	status = "okay";
@@ -970,7 +1013,7 @@
 	compatible = "qcom,sm8475-qmp-ufs-phy";
 	reg = <0 0x01d80000 0 0x2000>;
 	vdda-phy-supply = <&vreg_l5b_0p88>;
-	vdda-pll-supply = <&vreg_l6b_1p2>;
+	vdda-pll-supply = <&vreg_l10c_1p2>;
 	status = "okay";
 };
 
@@ -1179,7 +1222,7 @@
 
 &cci1_i2c0 {
 	camera@36 {
-		compatible = "smartsens,sc202cs", "galaxycore,gc02m1";
+		compatible = "smartsens,sc202cs";
 		reg = <0x36>;
 
 		clocks = <&camcc CAM_CC_MCLK1_CLK>;
@@ -1197,7 +1240,7 @@
 		port {
 			sc202cs_out: endpoint {
 				link-frequencies = /bits/ 64 <336000000 207000000>;
-				data-lanes = <0>;
+				data-lanes = <1>;
 				remote-endpoint = <&camss_csiphy1_ep>;
 			};
 		};
