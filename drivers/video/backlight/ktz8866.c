@@ -99,7 +99,7 @@ static int ktz8866_backlight_update_status(struct backlight_device *backlight_de
 	if (!ktz->led_on && brightness) {
 		ret = ktz8866_init(ktz);
 		if (ret)
-			dev_warn(&backlight_dev->dev, "ktz8866 re-init failed: %d\n", ret);
+			return ret;
 	}
 
 	/* Set brightness */
@@ -268,10 +268,7 @@ static int ktz8866_pm_resume(struct device *dev)
 	struct ktz8866 *ktz = bl_get_data(backlight_dev);
 
 	ktz->led_on = false;
-	if (backlight_dev)
-		backlight_update_status(backlight_dev);
-
-	return 0;
+	return backlight_update_status(backlight_dev);
 }
 
 static DEFINE_SIMPLE_DEV_PM_OPS(ktz8866_pm_ops, NULL, ktz8866_pm_resume);
