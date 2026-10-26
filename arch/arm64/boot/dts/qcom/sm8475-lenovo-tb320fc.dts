@@ -342,7 +342,7 @@
 	status = "okay";
 
 	display_panel: panel@0 {
-		compatible = "lenovo,tb320fc-nt36523n";
+		compatible = "lenovo,tb320fc-nt36523n", "novatek,nt36523n";
 		reg = <0>;
 		vddio-supply = <&vreg_l12c_1p95>;
 		vddpos-supply = <&panel_vddpos>;
@@ -417,7 +417,7 @@
 	status = "okay";
 
 	touchscreen@0 {
-		compatible = "novatek,nt36523n";
+		compatible = "novatek,nt36523n-ts";
 		reg = <0>;
 		spi-max-frequency = <9600000>;
 		interrupts-extended = <&tlmm 21 IRQ_TYPE_EDGE_RISING>;
