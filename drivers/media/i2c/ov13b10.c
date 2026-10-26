@@ -1888,6 +1888,8 @@ error_handler_free:
 	v4l2_ctrl_handler_free(ov13b->sd.ctrl_handler);
 error_pm_disable:
 	pm_runtime_disable(ov13b->dev);
+	if (!pm_runtime_status_suspended(ov13b->dev))
+		ov13b10_power_off(ov13b->dev);
 	pm_runtime_set_suspended(ov13b->dev);
 
 	return ret;
@@ -1903,6 +1905,8 @@ static void ov13b10_remove(struct i2c_client *client)
 	ov13b10_free_controls(ov13b);
 
 	pm_runtime_disable(ov13b->dev);
+	if (!pm_runtime_status_suspended(ov13b->dev))
+		ov13b10_power_off(ov13b->dev);
 	pm_runtime_set_suspended(ov13b->dev);
 }
 
