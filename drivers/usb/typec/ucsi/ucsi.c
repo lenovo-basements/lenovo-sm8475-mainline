@@ -32,6 +32,14 @@
 #define UCSI_INIT_TIMEOUT_RETRIES	2
 
 /*
+ * UCSI_PPM_RESET_RETRY_MS - Minimum time between repeated PPM_RESET commands
+ *
+ * A firmware PPM can take most of a second to reset, and a new PPM_RESET
+ * restarts it. Re-issuing it on every poll then keeps the PPM in reset.
+ */
+#define UCSI_PPM_RESET_RETRY_MS		2000
+
+/*
  * UCSI_SWAP_TIMEOUT_MS - Timeout for role swap requests
  *
  * 5 seconds is close to the time it takes for CapsCounter to reach 0, so even
@@ -1619,7 +1627,7 @@ static int ucsi_reset_connector(struct ucsi_connector *con, bool hard)
 static int ucsi_reset_ppm(struct ucsi *ucsi)
 {
 	u64 command;
-	unsigned long tmo;
+	unsigned long tmo, retry;
 	u32 cci;
 	int ret;
 
@@ -1662,9 +1670,11 @@ static int ucsi_reset_ppm(struct ucsi *ucsi)
 		goto out;
 
 	tmo = jiffies + msecs_to_jiffies(UCSI_TIMEOUT_MS);
+	retry = jiffies + msecs_to_jiffies(UCSI_PPM_RESET_RETRY_MS);
 
 	do {
 		if (time_is_before_jiffies(tmo)) {
+			dev_warn(ucsi->dev, "PPM reset timed out, last CCI 0x%08x\n", cci);
 			ret = -ETIMEDOUT;
 			goto out;
 		}
@@ -1676,11 +1686,11 @@ static int ucsi_reset_ppm(struct ucsi *ucsi)
 		if (ret)
 			goto out;
 
-		/* If the PPM is still doing something else, reset it again. */
-		if (cci & ~UCSI_CCI_RESET_COMPLETE) {
+		if ((cci & ~UCSI_CCI_RESET_COMPLETE) && time_is_before_jiffies(retry)) {
 			ret = ucsi->ops->async_control(ucsi, command);
 			if (ret < 0)
 				goto out;
+			retry = jiffies + msecs_to_jiffies(UCSI_PPM_RESET_RETRY_MS);
 		}
 
 	} while (!(cci & UCSI_CCI_RESET_COMPLETE));
