@@ -488,6 +488,7 @@ static int s5k4h7_disable_streams(struct v4l2_subdev *sd,
 }
 
 static int s5k4h7_set_pad_format(struct v4l2_subdev *sd,
+				 const struct v4l2_subdev_client_info *client_info,
 				 struct v4l2_subdev_state *state,
 				 struct v4l2_subdev_format *fmt)
 {
@@ -569,6 +570,7 @@ static int s5k4h7_enum_frame_size(struct v4l2_subdev *sd,
 }
 
 static int s5k4h7_get_selection(struct v4l2_subdev *sd,
+				const struct v4l2_subdev_client_info *client_info,
 				struct v4l2_subdev_state *sd_state,
 				struct v4l2_subdev_selection *sel)
 {
@@ -604,7 +606,7 @@ static int s5k4h7_init_state(struct v4l2_subdev *sd,
 		},
 	};
 
-	s5k4h7_set_pad_format(sd, state, &fmt);
+	s5k4h7_set_pad_format(sd, NULL, state, &fmt);
 
 	return 0;
 }
