@@ -1860,6 +1860,9 @@ static void msm_dp_ctrl_link_clk_disable(struct msm_dp_ctrl *msm_dp_ctrl)
 
 	ctrl = container_of(msm_dp_ctrl, struct msm_dp_ctrl_private, msm_dp_ctrl);
 
+	if (!ctrl->link_clks_on)
+		return;
+
 	clk_bulk_disable_unprepare(ctrl->num_link_clks, ctrl->link_clks);
 
 	ctrl->link_clks_on = false;
@@ -2393,7 +2396,7 @@ int msm_dp_ctrl_on_link(struct msm_dp_ctrl *msm_dp_ctrl,
 
 	ctrl = container_of(msm_dp_ctrl, struct msm_dp_ctrl_private, msm_dp_ctrl);
 
-	rate = panel->link_info.rate;
+	rate = panel->link_info.rate ?: 162000;
 	pixel_rate = panel->msm_dp_mode.drm_mode.clock;
 
 	msm_dp_ctrl_core_clk_enable(&ctrl->msm_dp_ctrl);
@@ -2406,7 +2409,7 @@ int msm_dp_ctrl_on_link(struct msm_dp_ctrl *msm_dp_ctrl,
 	} else {
 		ctrl->link->link_params.rate = rate;
 		ctrl->link->link_params.num_lanes =
-			panel->link_info.num_lanes;
+			panel->link_info.num_lanes ?: 2;
 		if (panel->msm_dp_mode.out_fmt_is_yuv_420)
 			pixel_rate >>= 1;
 	}
@@ -2418,6 +2421,11 @@ int msm_dp_ctrl_on_link(struct msm_dp_ctrl *msm_dp_ctrl,
 	rc = msm_dp_ctrl_enable_mainlink_clocks(ctrl, panel);
 	if (rc)
 		return rc;
+
+	if (!ctrl->link->sink_count) {
+		rc = -ENOTCONN;
+		goto out_check;
+	}
 
 	while (--link_train_max_retries) {
 		training_step = DP_TRAINING_NONE;
@@ -2485,6 +2493,7 @@ int msm_dp_ctrl_on_link(struct msm_dp_ctrl *msm_dp_ctrl,
 	if (!link_train_max_retries)
 		rc = -ETIMEDOUT;
 
+out_check:
 	if (rc == 0) {  /* link train successfully */
 		/*
 		 * do not stop train pattern here
@@ -2496,9 +2505,24 @@ int msm_dp_ctrl_on_link(struct msm_dp_ctrl *msm_dp_ctrl,
 		 * link training failed
 		 * end txing train pattern here
 		 */
-		msm_dp_ctrl_clear_training_pattern(ctrl, panel, DP_PHY_DPRX);
+		if (ctrl->link->sink_count) {
+			msm_dp_ctrl_clear_training_pattern(ctrl, panel, DP_PHY_DPRX);
+			msm_dp_ctrl_deinitialize_mainlink(ctrl, panel);
+		} else {
+			unsigned long stream_pixel_rate = panel->msm_dp_mode.drm_mode.clock;
 
-		msm_dp_ctrl_deinitialize_mainlink(ctrl, panel);
+			/*
+			 * Keep the DP PHY PLL, link clocks, and stream pixel clock
+			 * running when the sink was unplugged during suspend so
+			 * that the already-enabled DPU video timing engine continues
+			 * to receive a pixel clock until userspace disables the CRTC.
+			 */
+			if (msm_dp_ctrl->wide_bus_en || panel->msm_dp_mode.out_fmt_is_yuv_420)
+				stream_pixel_rate >>= 1;
+			if (stream_pixel_rate && !ctrl->stream_clks_on[panel->stream_id])
+				msm_dp_ctrl_on_pixel_clk(ctrl, stream_pixel_rate, panel->stream_id);
+		}
+
 		rc = -ECONNRESET;
 	}
 
