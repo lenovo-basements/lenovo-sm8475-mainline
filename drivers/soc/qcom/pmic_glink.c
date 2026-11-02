@@ -10,6 +10,7 @@
 #include <linux/notifier.h>
 #include <linux/of.h>
 #include <linux/platform_device.h>
+#include <linux/pm_wakeup.h>
 #include <linux/rpmsg.h>
 #include <linux/slab.h>
 #include <linux/soc/qcom/pdr.h>
@@ -389,6 +390,8 @@ static int pmic_glink_probe(struct platform_device *pdev)
 				    "failed to initialize pdr\n");
 		return ret;
 	}
+
+	device_init_wakeup(&pdev->dev, true);
 
 	if (pg->data->client_mask & BIT(PMIC_GLINK_CLIENT_UCSI)) {
 		ret = pmic_glink_add_aux_device(pg, &pg->ucsi_aux, "ucsi");
