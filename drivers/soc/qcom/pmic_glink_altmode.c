@@ -10,6 +10,7 @@
 #include <linux/of.h>
 #include <linux/of_device.h>
 #include <linux/mutex.h>
+#include <linux/pm_wakeup.h>
 #include <linux/property.h>
 #include <linux/soc/qcom/pdr.h>
 #include <drm/bridge/aux-bridge.h>
@@ -530,9 +531,11 @@ static void pmic_glink_altmode_callback(const void *data, size_t len, void *priv
 		complete(&altmode->pan_ack);
 		break;
 	case USBC_NOTIFY_IND:
+		pm_wakeup_dev_event(altmode->dev->parent, 500, true);
 		pmic_glink_altmode_sc8280xp_notify(altmode, svid, data, len);
 		break;
 	case USBC_SC8180X_NOTIFY_IND:
+		pm_wakeup_dev_event(altmode->dev->parent, 500, true);
 		pmic_glink_altmode_sc8180xp_notify(altmode, data, len);
 		break;
 	}
