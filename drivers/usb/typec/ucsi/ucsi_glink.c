@@ -9,6 +9,7 @@
 #include <linux/mutex.h>
 #include <linux/notifier.h>
 #include <linux/of_device.h>
+#include <linux/pm_wakeup.h>
 #include <linux/property.h>
 #include <linux/soc/qcom/pdr.h>
 #include <linux/usb/typec_mux.h>
@@ -315,7 +316,7 @@ static int pmic_glink_ucsi_dp_hpd_notify(struct notifier_block *nb,
 	struct pmic_glink_ucsi *ucsi = container_of(nb, struct pmic_glink_ucsi, dp_hpd_nb);
 
 	WRITE_ONCE(ucsi->c1_display, !!(state & BIT(0)));
-	schedule_work(&ucsi->route_work);
+	queue_work(system_freezable_wq, &ucsi->route_work);
 	return NOTIFY_OK;
 }
 
@@ -510,7 +511,8 @@ static void pmic_glink_ucsi_callback(const void *data, size_t len, void *priv)
 		pmic_glink_ucsi_write_ack(ucsi, data, len);
 		break;
 	case UC_UCSI_USBC_NOTIFY_IND:
-		schedule_work(&ucsi->notify_work);
+		pm_wakeup_dev_event(ucsi->dev->parent, 500, true);
+		queue_work(system_freezable_wq, &ucsi->notify_work);
 		break;
 	}
 }
@@ -713,6 +715,9 @@ static int pmic_glink_ucsi_suspend(struct device *dev)
 {
 	struct pmic_glink_ucsi *ucsi = dev_get_drvdata(dev);
 
+	cancel_work_sync(&ucsi->notify_work);
+	cancel_work_sync(&ucsi->route_work);
+
 	if (ucsi->ucsi_registered && ucsi->ucsi)
 		return ucsi_suspend(ucsi->ucsi);
 
@@ -722,11 +727,14 @@ static int pmic_glink_ucsi_suspend(struct device *dev)
 static int pmic_glink_ucsi_resume(struct device *dev)
 {
 	struct pmic_glink_ucsi *ucsi = dev_get_drvdata(dev);
+	int ret = 0;
 
-	if (ucsi->ucsi_registered && ucsi->ucsi)
-		return ucsi_resume(ucsi->ucsi);
+	if (ucsi->ucsi_registered && ucsi->ucsi) {
+		ret = ucsi_resume(ucsi->ucsi);
+		queue_work(system_freezable_wq, &ucsi->route_work);
+	}
 
-	return 0;
+	return ret;
 }
 
 static DEFINE_SIMPLE_DEV_PM_OPS(pmic_glink_ucsi_pm_ops,

@@ -236,10 +236,15 @@ static enum usb_device_speed dwc3_qcom_read_usb2_speed(struct dwc3_qcom *qcom, i
 	struct usb_hcd __maybe_unused *hcd;
 	struct dwc3 *dwc = &qcom->dwc;
 
+	if (!dwc->xhci)
+		return USB_SPEED_UNKNOWN;
+
 	/*
 	 * FIXME: Fix this layering violation.
 	 */
 	hcd = platform_get_drvdata(dwc->xhci);
+	if (!hcd || !hcd->self.root_hub)
+		return USB_SPEED_UNKNOWN;
 
 #ifdef CONFIG_USB
 	udev = usb_hub_find_child(hcd->self.root_hub, port_index + 1);
@@ -599,10 +604,24 @@ static void dwc3_qcom_set_role_notifier(struct dwc3 *dwc, enum usb_role next_rol
 {
 	struct dwc3_qcom *qcom = to_dwc3_qcom(dwc);
 
+	/*
+	 * System sleep (dwc3_qcom_pm_suspend) disables QSCRATCH clocks and
+	 * interconnects while leaving runtime PM status active. Defer hardware
+	 * updates until dwc3_qcom_pm_resume() if a role notification arrives
+	 * during system suspend/resume.
+	 */
+	if (qcom->pm_suspended) {
+		qcom->current_role = next_role;
+		return;
+	}
+
 	if (pm_runtime_resume_and_get(qcom->dev)) {
 		dev_dbg(qcom->dev, "Failed to resume device\n");
 		return;
 	}
+
+	if (qcom->is_suspended)
+		goto out;
 
 	/* The PIPE clock can disappear when DisplayPort takes all four lanes. */
 	dwc3_qcom_update_pipe_clk(qcom, next_role);
@@ -821,6 +840,7 @@ static int dwc3_qcom_pm_resume(struct device *dev)
 	if (ret)
 		return ret;
 	dwc3_qcom_update_pipe_clk(qcom, qcom->current_role);
+	dwc3_qcom_vbus_override_enable(qcom, qcom->current_role == USB_ROLE_DEVICE);
 
 	ret = dwc3_pm_resume(&qcom->dwc);
 	if (ret)
