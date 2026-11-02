@@ -496,6 +496,7 @@ static int msm_dp_hpd_unplug_handle(struct msm_dp_display_private *dp)
 			dp->link->sink_count);
 
 	if (dp->plugged) {
+		dp->link->sink_count = 0;
 		pm_runtime_put_sync(&pdev->dev);
 		dp->plugged = false;
 	}
@@ -646,13 +647,13 @@ static int msm_dp_display_prepare_link(struct msm_dp_display_private *dp)
 		return rc;
 	}
 
-	if (dp->link->sink_count == 0)
-		return -ENOTCONN;
-
 	if (!msm_dp_display->power_on) {
 		msm_dp_display_host_phy_init(dp);
 		force_link_train = true;
 	}
+
+	if (dp->link->sink_count == 0 && dp->plugged)
+		return -ENOTCONN;
 
 	rc = msm_dp_ctrl_on_link(dp->ctrl, dp->panel);
 	if (rc) {
@@ -727,10 +728,8 @@ static int msm_dp_display_disable(struct msm_dp_display_private *dp,
 {
 	struct msm_dp *msm_dp_display = &dp->msm_dp_display;
 
-	if (!msm_dp_display->power_on)
-		return 0;
-
-	msm_dp_panel_disable_vsc_sdp(msm_dp_panel);
+	if (msm_dp_display->power_on)
+		msm_dp_panel_disable_vsc_sdp(msm_dp_panel);
 
 	msm_dp_ctrl_off_pixel_clk(dp->ctrl, msm_dp_panel->stream_id);
 
@@ -1529,12 +1528,12 @@ static void msm_dp_display_unprepare(struct msm_dp_display_private *dp)
 	struct msm_dp *msm_dp_display = &dp->msm_dp_display;
 
 	/* dongle is still connected but sinks are disconnected */
-	if (dp->link->sink_count == 0)
+	if (dp->link->sink_count == 0 && dp->plugged)
 		msm_dp_link_psm_config(dp->link, &dp->panel->link_info, true);
 
 	msm_dp_ctrl_off_link(dp->ctrl, dp->panel);
 
-	if (dp->link->sink_count == 0)
+	if (dp->link->sink_count == 0 && dp->plugged)
 		/* re-init the PHY so that we can listen to Dongle disconnect */
 		msm_dp_ctrl_reinit_phy(dp->ctrl);
 	else
