@@ -4297,6 +4297,12 @@ static int qmp_combo_dp_power_on(struct phy *phy)
 
 	mutex_lock(&qmp->phy_mutex);
 
+	if (qmp->qmpphy_mode == QMPPHY_MODE_USB3_ONLY) {
+		qmp->pending_mode = QMPPHY_MODE_USB3_ONLY;
+		qmp->mode_pending = true;
+		qmp_combo_set_mux_mode(qmp, QMPPHY_MODE_USB3DP);
+	}
+
 	qmp_combo_dp_serdes_init(qmp);
 
 	qmp_configure_lane(qmp->dev, tx, cfg->dp_tx_tbl, cfg->dp_tx_tbl_num, 1);
@@ -4417,15 +4423,10 @@ static int qmp_combo_usb_power_on(struct phy *phy)
 			PHY_INIT_COMPLETE_TIMEOUT);
 	if (ret) {
 		dev_err(qmp->dev, "phy initialization timed-out\n");
-		goto err_disable_pipe_clk;
+		return ret;
 	}
 
 	return 0;
-
-err_disable_pipe_clk:
-	clk_disable_unprepare(qmp->pipe_clk);
-
-	return ret;
 }
 
 static int qmp_combo_usb_power_off(struct phy *phy)
@@ -4454,10 +4455,14 @@ static int qmp_combo_usb_power_off(struct phy *phy)
 /* Caller holds phy_mutex; preserve the PHY consumers' init counts. */
 static void qmp_combo_set_mux_mode(struct qmp_combo *qmp, enum qmpphy_mode new_mode)
 {
-	if (qmp->init_count)
+	if (qmp->init_count) {
+		if (pm_runtime_resume_and_get(qmp->dev) < 0)
+			return;
 		qmp_combo_reconfigure_phy(qmp, new_mode);
-	else
+		pm_runtime_put(qmp->dev);
+	} else {
 		qmp->qmpphy_mode = new_mode;
+	}
 }
 
 static int qmp_combo_usb_init(struct phy *phy)
@@ -4478,10 +4483,12 @@ static int qmp_combo_usb_init(struct phy *phy)
 	if (ret)
 		return ret;
 
-	ret = qmp_combo_usb_power_on(phy);
-	if (ret) {
-		qmp_combo_com_exit(qmp, false);
-		return ret;
+	if (qmp->qmpphy_mode != QMPPHY_MODE_DP_ONLY) {
+		ret = qmp_combo_usb_power_on(phy);
+		if (ret) {
+			qmp_combo_com_exit(qmp, false);
+			return ret;
+		}
 	}
 
 	qmp->usb_init_count++;
@@ -5121,15 +5128,21 @@ static int qmp_combo_typec_switch_set(struct typec_switch_dev *sw,
 	qmp->orientation = orientation;
 
 	if (qmp->init_count) {
+		if (pm_runtime_resume_and_get(qmp->dev) < 0)
+			return 0;
+
 		if (qmp->usb_init_count || qmp->usb4_init_count)
 			qmp_combo_usb_power_off(qmp->usb_phy);
 		qmp_combo_com_exit(qmp, true);
 
 		qmp_combo_com_init(qmp, true);
-		if (qmp->usb_init_count || qmp->usb4_init_count)
+		if ((qmp->usb_init_count || qmp->usb4_init_count) &&
+		    qmp->qmpphy_mode != QMPPHY_MODE_DP_ONLY)
 			qmp_combo_usb_power_on(qmp->usb_phy);
 		if (qmp->dp_init_count)
 			cfg->dp_aux_init(qmp);
+
+		pm_runtime_put(qmp->dev);
 	}
 
 	return 0;
@@ -5203,7 +5216,7 @@ static int qmp_combo_typec_mux_set(struct typec_mux_dev *mux, struct typec_mux_s
 	}
 
 	if (qmp->qmpphy_mode != QMPPHY_MODE_USB3_ONLY && qmp->dp_powered_on) {
-		dev_dbg(qmp->dev, "typec_mux_set: DP PHY is still in use, delaying switch\n");
+		dev_dbg(qmp->dev, "typec_mux_set: DP PHY is still on, delaying switch\n");
 		return 0;
 	}
 

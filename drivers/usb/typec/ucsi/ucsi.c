@@ -1595,7 +1595,7 @@ void ucsi_connector_change(struct ucsi *ucsi, u8 num)
 	con = &ucsi->connector[num - 1];
 
 	if (!test_and_set_bit(EVENT_PENDING, &ucsi->flags))
-		schedule_work(&con->work);
+		queue_work(system_freezable_wq, &con->work);
 }
 EXPORT_SYMBOL_GPL(ucsi_connector_change);
 
@@ -2201,7 +2201,7 @@ static void ucsi_resume_work(struct work_struct *work)
 	ret = ucsi_send_command(ucsi, command, NULL, 0);
 	if (ret < 0) {
 		if (++ucsi->resume_retries < 5) {
-			queue_delayed_work(system_dfl_long_wq, &ucsi->resume_work,
+			queue_delayed_work(system_freezable_wq, &ucsi->resume_work,
 					   msecs_to_jiffies(500));
 			return;
 		}
@@ -2230,8 +2230,10 @@ int ucsi_suspend(struct ucsi *ucsi)
 	if (!ucsi->connector)
 		return 0;
 
-	for (i = 0; i < ucsi->cap.num_connectors; i++)
-		cancel_work_sync(&ucsi->connector[i].work);
+	for (i = 0; i < ucsi->cap.num_connectors; i++) {
+		if (cancel_work_sync(&ucsi->connector[i].work))
+			clear_bit(EVENT_PENDING, &ucsi->flags);
+	}
 
 	return 0;
 }
@@ -2241,7 +2243,7 @@ int ucsi_resume(struct ucsi *ucsi)
 {
 	if (ucsi->connector) {
 		ucsi->resume_retries = 0;
-		queue_delayed_work(system_dfl_long_wq, &ucsi->resume_work, 0);
+		queue_delayed_work(system_freezable_wq, &ucsi->resume_work, 0);
 	}
 	return 0;
 }
