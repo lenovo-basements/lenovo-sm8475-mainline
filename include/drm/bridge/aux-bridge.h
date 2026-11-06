@@ -10,6 +10,7 @@
 #include <drm/drm_connector.h>
 
 struct auxiliary_device;
+struct drm_bridge;
 
 #if IS_ENABLED(CONFIG_DRM_AUX_BRIDGE)
 int drm_aux_bridge_register(struct device *parent);
@@ -26,6 +27,7 @@ int devm_drm_dp_hpd_bridge_add(struct device *dev, struct auxiliary_device *adev
 struct device *drm_dp_hpd_bridge_register(struct device *parent,
 					  struct device_node *np);
 void drm_aux_hpd_bridge_notify(struct device *dev, enum drm_connector_status status);
+enum drm_connector_status drm_aux_hpd_bridge_last_status(struct drm_bridge *bridge);
 #else
 static inline struct auxiliary_device *devm_drm_dp_hpd_bridge_alloc(struct device *parent,
 								    struct device_node *np)
@@ -46,6 +48,12 @@ static inline struct device *drm_dp_hpd_bridge_register(struct device *parent,
 
 static inline void drm_aux_hpd_bridge_notify(struct device *dev, enum drm_connector_status status)
 {
+}
+
+static inline enum drm_connector_status
+drm_aux_hpd_bridge_last_status(struct drm_bridge *bridge)
+{
+	return connector_status_unknown;
 }
 #endif
 

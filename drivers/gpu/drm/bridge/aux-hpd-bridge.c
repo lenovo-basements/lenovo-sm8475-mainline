@@ -18,6 +18,7 @@ static DEFINE_IDA(drm_aux_hpd_bridge_ida);
 struct drm_aux_hpd_bridge_data {
 	struct drm_bridge bridge;
 	struct device *dev;
+	enum drm_connector_status last_status;
 };
 
 static void drm_aux_hpd_bridge_release(struct device *dev)
@@ -154,6 +155,8 @@ void drm_aux_hpd_bridge_notify(struct device *dev, enum drm_connector_status sta
 	if (!data)
 		return;
 
+	WRITE_ONCE(data->last_status, status);
+
 	drm_bridge_hpd_notify(&data->bridge, status);
 }
 EXPORT_SYMBOL_GPL(drm_aux_hpd_bridge_notify);
@@ -172,6 +175,19 @@ static const struct drm_bridge_funcs drm_aux_hpd_bridge_funcs = {
 	.attach	= drm_aux_hpd_bridge_attach,
 };
 
+enum drm_connector_status drm_aux_hpd_bridge_last_status(struct drm_bridge *bridge)
+{
+	struct drm_aux_hpd_bridge_data *data;
+
+	if (bridge->funcs != &drm_aux_hpd_bridge_funcs)
+		return connector_status_unknown;
+
+	data = container_of(bridge, struct drm_aux_hpd_bridge_data, bridge);
+
+	return READ_ONCE(data->last_status);
+}
+EXPORT_SYMBOL_GPL(drm_aux_hpd_bridge_last_status);
+
 static int drm_aux_hpd_bridge_probe(struct auxiliary_device *auxdev,
 				    const struct auxiliary_device_id *id)
 {
@@ -184,6 +200,7 @@ static int drm_aux_hpd_bridge_probe(struct auxiliary_device *auxdev,
 		return PTR_ERR(data);
 
 	data->dev = &auxdev->dev;
+	data->last_status = connector_status_unknown;
 	data->bridge.of_node = dev_get_platdata(data->dev);
 	data->bridge.ops = DRM_BRIDGE_OP_HPD;
 	data->bridge.type = id->driver_data;

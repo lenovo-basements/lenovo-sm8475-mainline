@@ -10,9 +10,14 @@
 #include <linux/sched/mm.h>
 #include <uapi/linux/sched/types.h>
 
+#include <drm/drm_atomic.h>
+#include <drm/drm_bridge.h>
+#include <drm/drm_connector.h>
+#include <drm/drm_crtc.h>
 #include <drm/drm_drv.h>
 #include <drm/drm_mode_config.h>
 #include <drm/drm_vblank.h>
+#include <drm/bridge/aux-bridge.h>
 #include <drm/clients/drm_client_setup.h>
 
 #include "disp/msm_disp_snapshot.h"
@@ -350,6 +355,50 @@ int msm_kms_pm_prepare(struct device *dev)
 	return drm_mode_config_helper_suspend(ddev);
 }
 
+static bool msm_kms_dp_sink_departed(struct drm_encoder *encoder)
+{
+	bool departed = false;
+
+	if (!IS_REACHABLE(CONFIG_DRM_AUX_HPD_BRIDGE))
+		return false;
+
+	drm_for_each_bridge_in_chain(encoder, bridge) {
+		if (drm_aux_hpd_bridge_last_status(bridge) ==
+		    connector_status_disconnected)
+			departed = true;
+	}
+
+	return departed;
+}
+
+static void msm_kms_drop_departed_dp(struct drm_device *ddev)
+{
+	struct drm_atomic_commit *state = ddev->mode_config.suspend_state;
+	struct drm_connector_state *conn_state;
+	struct drm_crtc_state *crtc_state;
+	struct drm_connector *connector;
+	int i;
+
+	if (!state)
+		return;
+
+	for_each_new_connector_in_state(state, connector, conn_state, i) {
+		if (connector->connector_type != DRM_MODE_CONNECTOR_DisplayPort ||
+		    !conn_state->crtc || !conn_state->best_encoder ||
+		    !msm_kms_dp_sink_departed(conn_state->best_encoder))
+			continue;
+
+		crtc_state = drm_atomic_get_new_crtc_state(state, conn_state->crtc);
+		if (!crtc_state || !crtc_state->active)
+			continue;
+
+		drm_info(ddev, "[CONNECTOR:%d:%s] sink left during sleep, not restoring [CRTC:%d:%s]\n",
+			 connector->base.id, connector->name,
+			 conn_state->crtc->base.id, conn_state->crtc->name);
+		crtc_state->active = false;
+	}
+}
+
 void msm_kms_pm_complete(struct device *dev)
 {
 	struct msm_drm_private *priv = dev_get_drvdata(dev);
@@ -358,6 +407,7 @@ void msm_kms_pm_complete(struct device *dev)
 	if (!priv || !priv->kms)
 		return;
 
+	msm_kms_drop_departed_dp(ddev);
 	drm_mode_config_helper_resume(ddev);
 }
 
