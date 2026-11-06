@@ -496,6 +496,14 @@ static void pmic_glink_altmode_sc8280xp_notify(struct pmic_glink_altmode *altmod
 	}
 
 	alt_port = &altmode->ports[port];
+
+	dev_dbg(altmode->dev, "port %u: svid %#x->%#x mux %u->%u hpd %u irq %u\n",
+		port, alt_port->svid, svid, alt_port->mux_ctrl, notify->mux_ctrl,
+		svid == USB_TYPEC_DP_SID ? notify->extended_data.dp.hpd_state : 0,
+		svid == USB_TYPEC_DP_SID ? notify->extended_data.dp.hpd_irq : 0);
+	if (alt_port->svid != svid || alt_port->mux_ctrl != notify->mux_ctrl)
+		pm_wakeup_dev_event(altmode->dev->parent, 500, true);
+
 	alt_port->orientation = pmic_glink_altmode_orientation(orientation);
 	alt_port->svid = svid;
 	alt_port->mux_ctrl = notify->mux_ctrl;
@@ -531,11 +539,9 @@ static void pmic_glink_altmode_callback(const void *data, size_t len, void *priv
 		complete(&altmode->pan_ack);
 		break;
 	case USBC_NOTIFY_IND:
-		pm_wakeup_dev_event(altmode->dev->parent, 500, true);
 		pmic_glink_altmode_sc8280xp_notify(altmode, svid, data, len);
 		break;
 	case USBC_SC8180X_NOTIFY_IND:
-		pm_wakeup_dev_event(altmode->dev->parent, 500, true);
 		pmic_glink_altmode_sc8180xp_notify(altmode, data, len);
 		break;
 	}
@@ -734,11 +740,43 @@ static void pmic_glink_altmode_remove(struct auxiliary_device *adev)
 	}
 }
 
+static int pmic_glink_altmode_resume(struct device *dev)
+{
+	struct pmic_glink_altmode *altmode = dev_get_drvdata(dev);
+	struct pmic_glink_altmode_port *alt_port;
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(altmode->ports); i++) {
+		alt_port = &altmode->ports[i];
+
+		if (!alt_port->altmode || !alt_port->bridge ||
+		    !work_pending(&alt_port->work))
+			continue;
+
+		if (alt_port->svid == USB_TYPEC_DP_SID &&
+		    alt_port->mux_ctrl != MUX_CTRL_STATE_NO_CONN &&
+		    alt_port->hpd_state)
+			continue;
+
+		dev_dbg(dev, "port %d: DP sink left during sleep\n", i);
+		drm_aux_hpd_bridge_notify(&alt_port->bridge->dev,
+					  connector_status_disconnected);
+	}
+
+	return 0;
+}
+
+static DEFINE_SIMPLE_DEV_PM_OPS(pmic_glink_altmode_pm_ops, NULL,
+				pmic_glink_altmode_resume);
+
 static struct auxiliary_driver pmic_glink_altmode_driver = {
 	.name = "pmic_glink_altmode",
 	.probe = pmic_glink_altmode_probe,
 	.remove = pmic_glink_altmode_remove,
 	.id_table = pmic_glink_altmode_id_table,
+	.driver = {
+		.pm = pm_sleep_ptr(&pmic_glink_altmode_pm_ops),
+	},
 };
 
 module_auxiliary_driver(pmic_glink_altmode_driver);
