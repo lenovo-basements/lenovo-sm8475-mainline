@@ -185,22 +185,7 @@ int msm_atomic_check(struct drm_device *dev, struct drm_atomic_commit *state)
 {
 	struct msm_drm_private *priv = dev->dev_private;
 	struct msm_kms *kms = priv->kms;
-	struct drm_crtc_state *old_crtc_state, *new_crtc_state;
-	struct drm_crtc *crtc;
-	int i, ret = 0;
-
-	/*
-	 * FIXME: stop setting allow_modeset and move this check to the DPU
-	 * driver.
-	 */
-	for_each_oldnew_crtc_in_state(state, crtc, old_crtc_state,
-				      new_crtc_state, i) {
-		if ((old_crtc_state->ctm && !new_crtc_state->ctm) ||
-		    (!old_crtc_state->ctm && new_crtc_state->ctm)) {
-			new_crtc_state->mode_changed = true;
-			state->allow_modeset = true;
-		}
-	}
+	int ret = 0;
 
 	if (kms && kms->funcs && kms->funcs->check_mode_changed)
 		ret = kms->funcs->check_mode_changed(kms, state);
@@ -216,8 +201,21 @@ void msm_atomic_commit_tail(struct drm_atomic_commit *state)
 	struct msm_drm_private *priv = dev->dev_private;
 	struct msm_kms *kms = priv->kms;
 	struct drm_crtc *async_crtc = NULL;
+	struct drm_crtc *crtc;
+	struct drm_crtc_state *old_crtc_state, *new_crtc_state;
 	unsigned crtc_mask = get_crtc_mask(state);
 	bool async = can_do_async(state, &async_crtc);
+	bool warm_modeset = false;
+	int i;
+
+	for_each_oldnew_crtc_in_state(state, crtc, old_crtc_state,
+				      new_crtc_state, i) {
+		if (old_crtc_state->active && new_crtc_state->active &&
+		    drm_atomic_crtc_needs_modeset(new_crtc_state)) {
+			warm_modeset = true;
+			break;
+		}
+	}
 
 	trace_msm_atomic_commit_tail_start(async, crtc_mask);
 
@@ -245,6 +243,16 @@ void msm_atomic_commit_tail(struct drm_atomic_commit *state)
 	 * Push atomic updates down to hardware:
 	 */
 	drm_atomic_helper_commit_modeset_disables(dev, state);
+	if (warm_modeset) {
+		/*
+		 * Drop the commit-time runtime PM reference after disabling
+		 * active CRTCs so DPU/MDSS fully power-collapses before
+		 * re-enabling the display pipeline for the new mode.
+		 */
+		kms->funcs->disable_commit(kms);
+		flush_workqueue(kms->wq);
+		kms->funcs->enable_commit(kms);
+	}
 	drm_atomic_helper_commit_planes(dev, state, 0);
 	drm_atomic_helper_commit_modeset_enables(dev, state);
 
