@@ -1411,11 +1411,11 @@ static void dpu_encoder_virt_atomic_disable(struct drm_encoder *drm_enc,
 
 	dpu_encoder_resource_control(drm_enc, DPU_ENC_RC_EVENT_PRE_STOP);
 
-	if (dpu_enc->cur_slave && dpu_enc->cur_slave->ops.disable)
-		dpu_enc->cur_slave->ops.disable(dpu_enc->cur_slave);
-
 	if (dpu_enc->cur_master && dpu_enc->cur_master->ops.disable)
 		dpu_enc->cur_master->ops.disable(dpu_enc->cur_master);
+
+	if (dpu_enc->cur_slave && dpu_enc->cur_slave->ops.disable)
+		dpu_enc->cur_slave->ops.disable(dpu_enc->cur_slave);
 
 
 	/* after phys waits for frame-done, should be no more frames pending */
@@ -2221,11 +2221,11 @@ static void dpu_encoder_dsc_pipe_clr(struct dpu_hw_ctl *ctl,
 				     struct dpu_hw_dsc *hw_dsc,
 				     struct dpu_hw_pingpong *hw_pp)
 {
-	if (hw_dsc->ops.dsc_disable)
-		hw_dsc->ops.dsc_disable(hw_dsc);
-
 	if (hw_pp->ops.disable_dsc)
 		hw_pp->ops.disable_dsc(hw_pp);
+
+	if (hw_dsc->ops.dsc_disable)
+		hw_dsc->ops.dsc_disable(hw_dsc);
 
 	if (hw_dsc->ops.dsc_bind_pingpong_blk)
 		hw_dsc->ops.dsc_bind_pingpong_blk(hw_dsc, PINGPONG_NONE);
