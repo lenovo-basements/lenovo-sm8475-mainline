@@ -332,20 +332,23 @@ static bool _dpu_rm_check_lm_and_get_connected_blks(struct dpu_rm *rm,
 	}
 	*pp_idx = idx;
 
-	if (!topology->num_dspp)
-		return true;
+	if (lm_cfg->dspp != DSPP_MAX) {
+		idx = lm_cfg->dspp - DSPP_0;
+		if (idx < 0 || idx >= ARRAY_SIZE(rm->dspp_blks) || !rm->dspp_blks[idx]) {
+			DPU_ERROR("LM_%d, invalid DSPP_%d\n", lm_idx, idx);
+			return false;
+		}
 
-	idx = lm_cfg->dspp - DSPP_0;
-	if (idx < 0 || idx >= ARRAY_SIZE(rm->dspp_blks) || !rm->dspp_blks[idx]) {
-		DPU_ERROR("LM_%d, invalid DSPP_%d\n", lm_idx, idx);
-		return false;
+		if (reserved_by_other(global_state->dspp_to_crtc_id, idx, crtc_id)) {
+			DPU_DEBUG("LM_%d DSPP_%d already reserved\n", lm_idx, idx);
+			return false;
+		}
+		*dspp_idx = idx;
+	} else {
+		if (topology->num_dspp)
+			return false;
+		*dspp_idx = -1;
 	}
-
-	if (reserved_by_other(global_state->dspp_to_crtc_id, idx, crtc_id)) {
-		DPU_DEBUG("LM_%d DSPP_%d already reserved\n", lm_idx, idx);
-		return false;
-	}
-	*dspp_idx = idx;
 
 	return true;
 }
@@ -358,8 +361,11 @@ static int _dpu_rm_reserve_lms(struct dpu_rm *rm,
 {
 	int lm_idx[MAX_BLOCKS];
 	int pp_idx[MAX_BLOCKS];
-	int dspp_idx[MAX_BLOCKS] = {0};
+	int dspp_idx[MAX_BLOCKS];
 	int i, lm_count = 0;
+
+	for (i = 0; i < ARRAY_SIZE(dspp_idx); i++)
+		dspp_idx[i] = -1;
 
 	if (!topology->num_lm) {
 		DPU_ERROR("zero LMs in topology\n");
@@ -418,8 +424,8 @@ static int _dpu_rm_reserve_lms(struct dpu_rm *rm,
 	for (i = 0; i < lm_count; i++) {
 		global_state->mixer_to_crtc_id[lm_idx[i]] = crtc_id;
 		global_state->pingpong_to_crtc_id[pp_idx[i]] = crtc_id;
-		global_state->dspp_to_crtc_id[dspp_idx[i]] =
-			topology->num_dspp ? crtc_id : 0;
+		if (dspp_idx[i] >= 0)
+			global_state->dspp_to_crtc_id[dspp_idx[i]] = crtc_id;
 
 		trace_dpu_rm_reserve_lms(lm_idx[i] + LM_0, crtc_id,
 					 pp_idx[i] + PINGPONG_0);

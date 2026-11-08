@@ -1480,8 +1480,8 @@ static int dpu_crtc_assign_resources(struct drm_crtc *crtc,
 
 		cstate->mixers[i].hw_lm = to_dpu_hw_mixer(hw_lm[i]);
 		cstate->mixers[i].lm_ctl = to_dpu_hw_ctl(hw_ctl[ctl_idx]);
-		if (i < num_dspp)
-			cstate->mixers[i].hw_dspp = to_dpu_hw_dspp(hw_dspp[i]);
+		cstate->mixers[i].hw_dspp = (i < num_dspp) ?
+			to_dpu_hw_dspp(hw_dspp[i]) : NULL;
 	}
 
 	cstate->num_mixers = num_lm;
@@ -1534,9 +1534,15 @@ static int dpu_crtc_atomic_check(struct drm_crtc *crtc,
 
 	bool needs_dirtyfb = dpu_crtc_needs_dirtyfb(crtc_state);
 
-	/* don't reallocate resources if only ACTIVE has beeen changed */
+	/*
+	 * Reallocate resources on modeset or connector changes, or if color
+	 * management is requested on a CRTC whose mixers do not yet have
+	 * DSPP blocks assigned.
+	 */
 	if (crtc_state->mode_changed || crtc_state->connectors_changed ||
-	    crtc_state->color_mgmt_changed) {
+	    (crtc_state->color_mgmt_changed &&
+	     (crtc_state->ctm || crtc_state->gamma_lut) &&
+	     (!cstate->num_mixers || !cstate->mixers[0].hw_dspp))) {
 		rc = dpu_crtc_assign_resources(crtc, crtc_state);
 		if (rc < 0)
 			return rc;
