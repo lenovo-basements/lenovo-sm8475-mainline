@@ -77,12 +77,14 @@ struct nvt_ts {
 	bool suspended;
 	bool running;
 	bool faulted;
+	bool stopping;
 	bool cascade;
 	bool dma_setup;
 	u8 recovery_frames;
 	u8 recovery_attempts;
 	u8 io_failures;
 	u8 startup_attempts;
+	unsigned int recoveries;
 	u8 *tx;
 	u8 *rx;
 	size_t tx_size;
@@ -402,9 +404,12 @@ static int nvt_download_firmware(struct nvt_ts *ts)
 	error = nvt_write_value(ts, NVT_BOOT_READY, 1, 1);
 	if (error)
 		return error;
+	usleep_range(5000, 6000);
 
 	for (i = 0; i < 100; i++) {
 		usleep_range(10000, 11000);
+		if (READ_ONCE(ts->stopping))
+			return -ESHUTDOWN;
 		error = nvt_read(ts, NVT_RESET_COMPLETE, &state, 1);
 		if (error)
 			return error;
@@ -548,6 +553,7 @@ static int nvt_report_contacts(struct nvt_ts *ts, const u8 *frame)
 
 static int nvt_recover(struct nvt_ts *ts, u8 marker)
 {
+	unsigned int attempt;
 	int error;
 
 	if (marker == 0xfe) {
@@ -562,7 +568,17 @@ static int nvt_recover(struct nvt_ts *ts, u8 marker)
 		if (error)
 			return error;
 	}
-	return nvt_download_firmware(ts);
+
+	for (attempt = 0; attempt < NVT_STARTUP_ATTEMPTS; attempt++) {
+		/* Don't hold off nvt_stop() (and so panel disable) for retries. */
+		if (READ_ONCE(ts->stopping))
+			return -ESHUTDOWN;
+		error = nvt_download_firmware(ts);
+		if (!error)
+			return 0;
+	}
+
+	return error;
 }
 
 static void nvt_fault(struct nvt_ts *ts, int irq)
@@ -604,14 +620,20 @@ static irqreturn_t nvt_irq(int irq, void *context)
 			goto out;
 		ts->recovery_frames = 0;
 		nvt_release_contacts(ts);
-		if (ts->recovery_attempts++ < 3) {
-			dev_warn(&ts->spi->dev, "Controller watchdog; reloading firmware\n");
-			error = nvt_recover(ts, frame[0]);
-			if (!error)
-				goto out;
-			dev_err(&ts->spi->dev, "Firmware recovery failed: %d\n", error);
+		error = nvt_recover(ts, frame[0]);
+		if (!error) {
+			ts->recovery_attempts = 0;
+			ts->recoveries++;
+			dev_warn_ratelimited(&ts->spi->dev,
+					     "Controller watchdog; firmware reloaded (%u since start)\n",
+					     ts->recoveries);
+			goto out;
 		}
-		nvt_fault(ts, irq);
+		if (error == -ESHUTDOWN)
+			goto out;
+		dev_err(&ts->spi->dev, "Firmware recovery failed: %d\n", error);
+		if (++ts->recovery_attempts >= NVT_STARTUP_ATTEMPTS)
+			nvt_fault(ts, irq);
 		goto out;
 	}
 	ts->recovery_frames = 0;
@@ -620,6 +642,7 @@ static irqreturn_t nvt_irq(int irq, void *context)
 
 	error = nvt_report_contacts(ts, frame);
 	if (!error) {
+		ts->recovery_attempts = 0;
 		ts->invalid_report = false;
 		cancel_delayed_work(&ts->release_work);
 	} else {
@@ -643,9 +666,11 @@ static int nvt_start(struct nvt_ts *ts)
 		return 0;
 
 	mutex_lock(&ts->io_lock);
+	WRITE_ONCE(ts->stopping, false);
 	error = nvt_download_firmware(ts);
 	if (!error) {
 		ts->running = true;
+		ts->recoveries = 0;
 		ts->faulted = false;
 		ts->recovery_frames = 0;
 		ts->recovery_attempts = 0;
@@ -693,6 +718,8 @@ static void nvt_stop(struct nvt_ts *ts)
 	if (!ts->running)
 		return;
 
+	/* Let an in-flight watchdog recovery bail out before we wait for it. */
+	WRITE_ONCE(ts->stopping, true);
 	disable_irq(ts->spi->irq);
 	cancel_delayed_work_sync(&ts->release_work);
 	mutex_lock(&ts->io_lock);
