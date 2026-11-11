@@ -15,6 +15,7 @@
 #include <linux/property.h>
 #include <linux/soc/qcom/pdr.h>
 #include <linux/soc/qcom/pmic_glink.h>
+#include <linux/suspend.h>
 #include <linux/math.h>
 #include <linux/units.h>
 
@@ -33,6 +34,7 @@ enum qcom_battmgr_variant {
 #define BATTMGR_BAT_STATUS		0x1
 
 #define BATTMGR_REQUEST_NOTIFICATION	0x4
+#define BATTMGR_DISABLE_NOTIFICATION	0x5
 
 #define BATTMGR_NOTIFICATION		0x7
 #define NOTIF_BAT_PROPERTY		0x30
@@ -343,6 +345,7 @@ struct qcom_battmgr {
 	struct qcom_battmgr_wireless wireless;
 
 	struct work_struct enable_work;
+	bool restore_notifications;
 
 	/*
 	 * @lock is used to prevent concurrent power supply requests to the
@@ -1536,7 +1539,8 @@ static void qcom_battmgr_sm8350_callback(struct qcom_battmgr *battmgr,
 	size_t payload_len = len - sizeof(struct pmic_glink_hdr);
 	unsigned int val;
 
-	if (payload_len < sizeof(__le32) && opcode != BATTMGR_BAT_PROPERTY_SET) {
+	if (payload_len < sizeof(__le32) && opcode != BATTMGR_BAT_PROPERTY_SET &&
+	    opcode != BATTMGR_DISABLE_NOTIFICATION) {
 		dev_warn(battmgr->dev, "invalid payload length for %#x: %zd\n",
 			 opcode, len);
 		return;
@@ -1731,6 +1735,7 @@ static void qcom_battmgr_sm8350_callback(struct qcom_battmgr *battmgr,
 		battmgr->error = le32_to_cpu(resp->intval.result) ? -EIO : 0;
 		break;
 	case BATTMGR_REQUEST_NOTIFICATION:
+	case BATTMGR_DISABLE_NOTIFICATION:
 	case BATTMGR_CHG_CTRL_LIMIT_EN:
 		battmgr->error = 0;
 		break;
@@ -1758,22 +1763,80 @@ static void qcom_battmgr_callback(const void *data, size_t len, void *priv)
 		qcom_battmgr_sm8350_callback(battmgr, data, len);
 }
 
-static void qcom_battmgr_enable_worker(struct work_struct *work)
+static int qcom_battmgr_set_notifications(struct qcom_battmgr *battmgr, bool enable)
 {
-	struct qcom_battmgr *battmgr = container_of(work, struct qcom_battmgr, enable_work);
 	struct qcom_battmgr_enable_request req = {
 		.hdr.owner = cpu_to_le32(PMIC_GLINK_OWNER_BATTMGR),
 		.hdr.type = cpu_to_le32(PMIC_GLINK_NOTIFY),
-		.hdr.opcode = cpu_to_le32(BATTMGR_REQUEST_NOTIFICATION),
+		.hdr.opcode = cpu_to_le32(enable ? BATTMGR_REQUEST_NOTIFICATION :
+					 BATTMGR_DISABLE_NOTIFICATION),
 	};
-	int ret;
+
+	return qcom_battmgr_request(battmgr, &req, sizeof(req));
+}
+
+static void qcom_battmgr_enable_worker(struct work_struct *work)
+{
+	struct qcom_battmgr *battmgr = container_of(work, struct qcom_battmgr, enable_work);
 
 	mutex_lock(&battmgr->lock);
-	ret = qcom_battmgr_request(battmgr, &req, sizeof(req));
-	if (ret)
+	if (!battmgr->restore_notifications &&
+	    qcom_battmgr_set_notifications(battmgr, true))
 		dev_err(battmgr->dev, "failed to request power notifications\n");
 	mutex_unlock(&battmgr->lock);
 }
+
+static int qcom_battmgr_suspend(struct device *dev)
+{
+	struct qcom_battmgr *battmgr = dev_get_drvdata(dev);
+	int ret;
+
+	if (pm_suspend_target_state != PM_SUSPEND_MEM ||
+	    battmgr->variant != QCOM_BATTMGR_LENOVO_SM8475)
+		return 0;
+
+	mutex_lock(&battmgr->lock);
+	if (!READ_ONCE(battmgr->service_up)) {
+		ret = -ENOTCONN;
+		goto unlock;
+	}
+	ret = qcom_battmgr_set_notifications(battmgr, false);
+	if (ret) {
+		dev_warn(dev, "failed to pause notifications for deep suspend: %d\n", ret);
+		if (qcom_battmgr_set_notifications(battmgr, true))
+			dev_warn(dev, "failed to recover notifications after suspend abort\n");
+	} else {
+		battmgr->restore_notifications = true;
+		dev_info(dev, "paused notifications for deep suspend\n");
+	}
+unlock:
+	mutex_unlock(&battmgr->lock);
+	return ret;
+}
+
+static int qcom_battmgr_resume(struct device *dev)
+{
+	struct qcom_battmgr *battmgr = dev_get_drvdata(dev);
+	int ret;
+
+	if (!battmgr->restore_notifications)
+		return 0;
+
+	mutex_lock(&battmgr->lock);
+	battmgr->restore_notifications = false;
+	ret = qcom_battmgr_set_notifications(battmgr, true);
+	if (ret) {
+		dev_warn(dev, "failed to restore notifications after deep suspend: %d\n", ret);
+		schedule_work(&battmgr->enable_work);
+	} else {
+		dev_info(dev, "restored notifications after deep suspend\n");
+	}
+	mutex_unlock(&battmgr->lock);
+	return 0;
+}
+
+static DEFINE_SIMPLE_DEV_PM_OPS(qcom_battmgr_pm_ops,
+			      qcom_battmgr_suspend, qcom_battmgr_resume);
 
 static void qcom_battmgr_pdr_notify(void *priv, int state)
 {
@@ -1819,6 +1882,7 @@ static int qcom_battmgr_probe(struct auxiliary_device *adev,
 		return -ENOMEM;
 
 	battmgr->dev = dev;
+	dev_set_drvdata(dev, battmgr);
 
 	psy_cfg.drv_data = battmgr;
 	psy_cfg.fwnode = dev_fwnode(&adev->dev);
@@ -1920,6 +1984,7 @@ static struct auxiliary_driver qcom_battmgr_driver = {
 	.name = "pmic_glink_power_supply",
 	.probe = qcom_battmgr_probe,
 	.id_table = qcom_battmgr_id_table,
+	.driver.pm = pm_sleep_ptr(&qcom_battmgr_pm_ops),
 };
 
 module_auxiliary_driver(qcom_battmgr_driver);
