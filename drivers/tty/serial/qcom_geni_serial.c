@@ -2090,7 +2090,9 @@ static int qcom_geni_serial_suspend(struct device *dev)
 		geni_icc_set_bw(&port->se);
 	}
 
+	disable_irq(uport->irq);
 	ret = uart_suspend_port(private_data->drv, uport);
+	enable_irq(uport->irq);
 	if (ret)
 		return ret;
 
