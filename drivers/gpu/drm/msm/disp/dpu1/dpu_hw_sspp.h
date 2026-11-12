@@ -180,6 +180,25 @@ struct dpu_sw_pipe {
  * Caller must call the init function to get the pipe context for each pipe
  * Assumption is these functions will be called after clocks are enabled
  */
+
+#define DPU_VIG_IGC_SIZE	257
+#define DPU_VIG_IGC_BITS	12
+
+struct dpu_hw_vig_igc {
+	u16 c[3][DPU_VIG_IGC_SIZE];
+};
+
+#define DPU_VIG_GAMUT_SIZE	17
+#define DPU_VIG_GAMUT_BITS	10
+#define DPU_VIG_GAMUT_TABLES	4
+#define DPU_VIG_GAMUT_TBL_LEN	DIV_ROUND_UP(DPU_VIG_GAMUT_SIZE * DPU_VIG_GAMUT_SIZE * \
+					     DPU_VIG_GAMUT_SIZE, DPU_VIG_GAMUT_TABLES)
+
+struct dpu_hw_vig_gamut {
+	u32 c0[DPU_VIG_GAMUT_TABLES][DPU_VIG_GAMUT_TBL_LEN];
+	u32 c2_c1[DPU_VIG_GAMUT_TABLES][DPU_VIG_GAMUT_TBL_LEN];
+};
+
 struct dpu_hw_sspp_ops {
 	/**
 	 * @setup_format: setup pixel format cropping rectangle, flip
@@ -220,6 +239,20 @@ struct dpu_hw_sspp_ops {
 	 * @data: Pointer to config structure
 	 */
 	void (*setup_csc)(struct dpu_hw_sspp *ctx, const struct dpu_csc_cfg *data);
+
+	/**
+	 * @setup_igc: program and enable the VIG 1D LUT, or disable it (NULL)
+	 * @ctx: Pointer to pipe context
+	 * @igc: LUT in hardware channel order, or NULL
+	 */
+	void (*setup_igc)(struct dpu_hw_sspp *ctx, const struct dpu_hw_vig_igc *igc);
+
+	/**
+	 * @setup_gamut: program and enable the VIG 3D LUT, or disable it (NULL)
+	 * @ctx: Pointer to pipe context
+	 * @gamut: LUT in hardware table layout, or NULL
+	 */
+	void (*setup_gamut)(struct dpu_hw_sspp *ctx, const struct dpu_hw_vig_gamut *gamut);
 
 	/**
 	 * @setup_solidfill: enable/disable colorfill
@@ -319,7 +352,13 @@ struct dpu_hw_sspp {
 
 	/* Ops */
 	struct dpu_hw_sspp_ops ops;
+
+	/* Color processing (IGC/GAMUT) last programmed, see dpu_plane.c */
+	u64 cp_cookie;
 };
+
+#define DPU_HW_CP_COOKIE_OFF		0
+#define DPU_HW_CP_COOKIE_UNKNOWN	U64_MAX
 
 struct dpu_kms;
 

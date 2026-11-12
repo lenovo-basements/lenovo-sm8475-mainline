@@ -430,8 +430,9 @@ static void _dpu_encoder_phys_wb_handle_wbdone_timeout(
 	/* request a ctl reset before the next kickoff */
 	phys_enc->enable_state = DPU_ENC_ERR_NEEDS_HW_RESET;
 
+	/* the frame was not written: don't report the buffer as valid */
 	if (wb_enc->wb_conn)
-		drm_writeback_signal_completion(wb_enc->wb_conn, 0);
+		drm_writeback_signal_completion(wb_enc->wb_conn, -ETIMEDOUT);
 
 	dpu_encoder_frame_done_callback(phys_enc->parent, phys_enc, frame_event);
 }
@@ -550,8 +551,14 @@ static void dpu_encoder_phys_wb_disable(struct dpu_encoder_phys *phys_enc)
 	 * WB support is added to those targets will need to add
 	 * the legacy teardown sequence as well.
 	 */
-	if (phys_enc->dpu_kms->catalog->mdss_ver->core_major_ver >= 5)
+	if (phys_enc->dpu_kms->catalog->mdss_ver->core_major_ver >= 5) {
 		dpu_encoder_helper_phys_cleanup(phys_enc);
+
+		if (phys_enc->hw_ctl->ops.reset &&
+		    phys_enc->hw_ctl->ops.reset(phys_enc->hw_ctl))
+			DPU_ERROR("[wb:%d] ctl reset after teardown failed\n",
+				  hw_wb->idx - WB_0);
+	}
 
 	phys_enc->enable_state = DPU_ENC_DISABLED;
 }
@@ -616,8 +623,11 @@ static void dpu_encoder_phys_wb_cleanup_wb_job(struct dpu_encoder_phys *phys_enc
 		return;
 
 	msm_framebuffer_cleanup(job->fb, false);
-	wb_enc->wb_job = NULL;
-	wb_enc->wb_conn = NULL;
+
+	if (wb_enc->wb_job == job) {
+		wb_enc->wb_job = NULL;
+		wb_enc->wb_conn = NULL;
+	}
 }
 
 static bool dpu_encoder_phys_wb_is_valid_for_commit(struct dpu_encoder_phys *phys_enc)

@@ -43,7 +43,11 @@ struct dpu_plane_state {
 	bool needs_dirtyfb;
 
 	struct dpu_hw_fmt_layout layout;
+
+	struct dpu_plane_cp *cp;
 };
+
+struct dpu_plane_cp;
 
 #define to_dpu_plane_state(x) \
 	container_of(x, struct dpu_plane_state, base)

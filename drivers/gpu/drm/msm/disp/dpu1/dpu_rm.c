@@ -823,6 +823,9 @@ static struct dpu_hw_sspp *dpu_rm_try_sspp(struct dpu_rm *rm,
 		if (reqs->yuv && !hw_sspp->cap->sblk->csc_blk.len)
 			continue;
 
+		if (reqs->cp && !hw_sspp->cap->sblk->cp_blk.len)
+			continue;
+
 		if (reqs->rot90 && !(hw_sspp->cap->features & DPU_SSPP_INLINE_ROTATION))
 			continue;
 
@@ -848,9 +851,9 @@ struct dpu_hw_sspp *dpu_rm_reserve_sspp(struct dpu_rm *rm,
 {
 	struct dpu_hw_sspp *hw_sspp = NULL;
 
-	if (!reqs->scale && !reqs->yuv)
+	if (!reqs->scale && !reqs->yuv && !reqs->cp)
 		hw_sspp = dpu_rm_try_sspp(rm, global_state, crtc, reqs, SSPP_TYPE_DMA);
-	if (!hw_sspp && !reqs->yuv)
+	if (!hw_sspp && !reqs->yuv && !reqs->cp)
 		hw_sspp = dpu_rm_try_sspp(rm, global_state, crtc, reqs, SSPP_TYPE_RGB);
 	if (!hw_sspp)
 		hw_sspp = dpu_rm_try_sspp(rm, global_state, crtc, reqs, SSPP_TYPE_VIG);
