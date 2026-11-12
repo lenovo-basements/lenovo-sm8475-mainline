@@ -245,7 +245,7 @@ alternative_cb_end
 	ldr	x0, [tsk, THREAD_SCTLR_USER]
 	check_mte_async_tcf x22, x23, x0
 
-#ifdef CONFIG_ARM64_PTR_AUTH
+#ifdef CONFIG_ARM64_PTR_AUTH_KERNEL
 alternative_if ARM64_HAS_ADDRESS_AUTH
 	/*
 	 * Enable IA for in-kernel PAC if the task had it disabled. Although
@@ -279,9 +279,11 @@ alternative_if ARM64_MTE
 	isb
 	b	1f
 alternative_else_nop_endif
+#ifdef CONFIG_ARM64_PTR_AUTH_KERNEL
 alternative_if ARM64_HAS_ADDRESS_AUTH
 	isb
 alternative_else_nop_endif
+#endif
 1:
 
 	scs_load_current_base
@@ -400,6 +402,9 @@ alternative_if ARM64_HAS_ADDRESS_AUTH
 	 * IA was enabled for in-kernel PAC. Disable it now if needed, or
 	 * alternatively install the user's IA. All other per-task keys and
 	 * SCTLR bits were updated on task switch.
+	 *
+	 * Without in-kernel PAC, kernel entry leaves IA alone, but this is
+	 * still where the user's IA key and EnIA are installed.
 	 *
 	 * No kernel C function calls after this.
 	 */
