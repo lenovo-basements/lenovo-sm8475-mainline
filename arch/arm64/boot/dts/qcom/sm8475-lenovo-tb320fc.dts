@@ -372,6 +372,18 @@
 };
 
 &mdss {
+	/*
+	 * Vote the regular MDP -> EBI1 path instead of the _DISP one. The
+	 * sm8450 interconnect driver registers the _disp BCMs (ACV, MC0, MM0,
+	 * MM1, SH0, SH1) on the same apps voter as the regular BCMs of the
+	 * same name, so they write the same RPMh BCMs: when MDSS idles, its
+	 * zero _DISP vote overwrites everyone else's (iris stalls mid-decode
+	 * with the panel off, then UFS/ADSP starve). Same path as sm8550.
+	 */
+	interconnects = <&mmss_noc MASTER_MDP 0 &mc_virt SLAVE_EBI1 0>,
+			<&mmss_noc MASTER_MDP 0 &mc_virt SLAVE_EBI1 0>,
+			<&gem_noc MASTER_APPSS_PROC QCOM_ICC_TAG_ACTIVE_ONLY
+			 &config_noc SLAVE_DISPLAY_CFG QCOM_ICC_TAG_ACTIVE_ONLY>;
 	status = "okay";
 };
 
@@ -678,6 +690,10 @@
 
 &camcc {
 	compatible = "qcom,sm8475-camcc";
+};
+
+&dispcc {
+	compatible = "qcom,sm8475-dispcc";
 };
 
 
@@ -1139,6 +1155,7 @@
 };
 
 &videocc {
+	compatible = "qcom,sm8475-videocc";
 	status = "okay";
 };
 
