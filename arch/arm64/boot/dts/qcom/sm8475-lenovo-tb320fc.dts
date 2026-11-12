@@ -1147,7 +1147,7 @@
 	actuator@c {
 		compatible = "dongwoon,dw9714";
 		reg = <0x0c>;
-		vcc-supply = <&vreg_bob>;
+		vcc-supply = <&cam_afvdd_main>;
 	};
 
 	eeprom@58 {
@@ -1172,8 +1172,8 @@
 		reset-gpios = <&tlmm 25 GPIO_ACTIVE_LOW>;
 
 		dovdd-supply = <&camera_ldo_dovdd>;
-		avdd-supply = <&vreg_bob>;
-		dvdd-supply = <&camera_ldo_dovdd>;
+		avdd-supply = <&cam_avdd_main>;
+		dvdd-supply = <&cam_dvdd_main>;
 
 		port {
 			ov13b10_out: endpoint {
@@ -1201,8 +1201,8 @@
 		reset-gpios = <&tlmm 117 GPIO_ACTIVE_LOW>;
 
 		dovdd-supply = <&camera_ldo_dovdd>;
-		avdd-supply = <&vreg_bob>;
-		dvdd-supply = <&camera_ldo_dovdd>;
+		avdd-supply = <&cam_avdd_s5k4h7>;
+		dvdd-supply = <&cam_dvdd_s5k4h7>;
 
 		port {
 			s5k4h7_out: endpoint {
@@ -1221,6 +1221,52 @@
 };
 
 &cci1_i2c0 {
+	camera_pmic: pmic@29 {
+		compatible = "willsemi,wl2864c";
+		reg = <0x29>;
+		vddio-supply = <&camera_ldo_dovdd>;
+		vin1-supply = <&vreg_l4c_1p8>;
+		vin2-supply = <&vreg_bob>;
+
+		regulators {
+			cam_dvdd_main: ldo1 {
+				regulator-name = "cam_dvdd_main";
+				regulator-min-microvolt = <1100000>;
+				regulator-max-microvolt = <1100000>;
+			};
+
+			cam_dvdd_s5k4h7: ldo2 {
+				regulator-name = "cam_dvdd_s5k4h7";
+				regulator-min-microvolt = <1200000>;
+				regulator-max-microvolt = <1200000>;
+			};
+
+			cam_avdd_s5k4h7: ldo3 {
+				regulator-name = "cam_avdd_s5k4h7";
+				regulator-min-microvolt = <2800000>;
+				regulator-max-microvolt = <2800000>;
+			};
+
+			cam_avdd_main: ldo4 {
+				regulator-name = "cam_avdd_main";
+				regulator-min-microvolt = <2800000>;
+				regulator-max-microvolt = <2800000>;
+			};
+
+			cam_afvdd_main: ldo5 {
+				regulator-name = "cam_afvdd_main";
+				regulator-min-microvolt = <2800000>;
+				regulator-max-microvolt = <2800000>;
+			};
+
+			cam_avdd_sc202cs: ldo6 {
+				regulator-name = "cam_avdd_sc202cs";
+				regulator-min-microvolt = <2800000>;
+				regulator-max-microvolt = <2800000>;
+			};
+		};
+	};
+
 	camera@36 {
 		compatible = "smartsens,sc202cs";
 		reg = <0x36>;
@@ -1234,8 +1280,7 @@
 		reset-gpios = <&tlmm 24 GPIO_ACTIVE_LOW>;
 
 		dovdd-supply = <&camera_ldo_dovdd>;
-		avdd-supply = <&vreg_bob>;
-		dvdd-supply = <&camera_ldo_dovdd>;
+		avdd-supply = <&cam_avdd_sc202cs>;
 
 		port {
 			sc202cs_out: endpoint {
