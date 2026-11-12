@@ -26,25 +26,32 @@ int iris_set_icc_bw(struct iris_core *core, unsigned long icc_bw)
 	icc_tbl = core->iris_platform_data->icc_tbl;
 
 	for (i = 0; i < core->icc_count; i++) {
-		if (!strcmp(core->icc_tbl[i].name, "video-mem")) {
-			bw_kbps = icc_bw;
-			bw_prev = core->power.icc_bw;
-
-			bw_kbps = clamp_t(typeof(bw_kbps), bw_kbps,
-					  icc_tbl[i].bw_min_kbps, icc_tbl[i].bw_max_kbps);
-
-			if (abs(bw_kbps - bw_prev) < BW_THRESHOLD && bw_prev)
-				return ret;
-
-			core->icc_tbl[i].avg_bw = bw_kbps;
-			core->icc_tbl[i].peak_bw = bw_kbps * icc_ib_multiplier;
-
-			core->power.icc_bw = bw_kbps;
-			break;
+		if (strcmp(core->icc_tbl[i].name, "video-mem")) {
+			core->icc_tbl[i].avg_bw = icc_tbl[i].bw_min_kbps;
+			core->icc_tbl[i].peak_bw = 0;
+			continue;
 		}
+
+		bw_kbps = icc_bw;
+		bw_prev = core->power.icc_bw;
+
+		bw_kbps = clamp_t(typeof(bw_kbps), bw_kbps,
+				  icc_tbl[i].bw_min_kbps, icc_tbl[i].bw_max_kbps);
+
+		if (abs_diff(bw_kbps, bw_prev) < BW_THRESHOLD && bw_prev)
+			return ret;
+
+		core->icc_tbl[i].avg_bw = bw_kbps;
+		core->icc_tbl[i].peak_bw = bw_kbps * icc_ib_multiplier;
+
+		core->power.icc_bw = bw_kbps;
 	}
 
-	return icc_bulk_set_bw(core->icc_count, core->icc_tbl);
+	ret = icc_bulk_set_bw(core->icc_count, core->icc_tbl);
+	if (ret)
+		core->power.icc_bw = 0;	/* invalidate cache so the next call retries */
+
+	return ret;
 }
 
 int iris_unset_icc_bw(struct iris_core *core)
