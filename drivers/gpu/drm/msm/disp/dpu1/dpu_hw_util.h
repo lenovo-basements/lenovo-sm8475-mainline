@@ -30,6 +30,11 @@
 
 extern const struct dpu_csc_cfg dpu_csc_YUV2RGB_601L;
 extern const struct dpu_csc_cfg dpu_csc10_YUV2RGB_601L;
+extern const struct dpu_csc_cfg dpu_csc10_YUV2RGB_601F;
+extern const struct dpu_csc_cfg dpu_csc10_YUV2RGB_709L;
+extern const struct dpu_csc_cfg dpu_csc10_YUV2RGB_709F;
+extern const struct dpu_csc_cfg dpu_csc10_YUV2RGB_2020L;
+extern const struct dpu_csc_cfg dpu_csc10_YUV2RGB_2020F;
 extern const struct dpu_csc_cfg dpu_csc10_rgb2yuv_601l;
 
 /*

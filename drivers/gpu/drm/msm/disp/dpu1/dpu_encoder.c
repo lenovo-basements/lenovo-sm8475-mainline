@@ -2260,10 +2260,16 @@ void dpu_encoder_helper_phys_cleanup(struct dpu_encoder_phys *phys_enc)
 {
 	struct dpu_hw_ctl *ctl = phys_enc->hw_ctl;
 	struct dpu_hw_intf_cfg intf_cfg = { 0 };
+	enum dpu_3d_blend_mode mode_3d;
+	struct dpu_hw_merge_3d *merge_3d = NULL;
 	int i;
 	struct dpu_encoder_virt *dpu_enc;
 
 	dpu_enc = to_dpu_encoder_virt(phys_enc->parent);
+
+	mode_3d = dpu_encoder_helper_get_3d_blend_mode(phys_enc);
+	if (mode_3d && phys_enc->hw_pp)
+		merge_3d = phys_enc->hw_pp->merge_3d;
 
 	ctl->ops.reset(ctl);
 
@@ -2303,12 +2309,10 @@ void dpu_encoder_helper_phys_cleanup(struct dpu_encoder_phys *phys_enc)
 		dpu_encoder_helper_phys_setup_cwb(phys_enc, false);
 
 	/* reset the merge 3D HW block */
-	if (phys_enc->hw_pp && phys_enc->hw_pp->merge_3d) {
-		phys_enc->hw_pp->merge_3d->ops.setup_3d_mode(phys_enc->hw_pp->merge_3d,
-				BLEND_3D_NONE);
+	if (merge_3d) {
+		merge_3d->ops.setup_3d_mode(merge_3d, BLEND_3D_NONE);
 		if (ctl->ops.update_pending_flush_merge_3d)
-			ctl->ops.update_pending_flush_merge_3d(ctl,
-					phys_enc->hw_pp->merge_3d->idx);
+			ctl->ops.update_pending_flush_merge_3d(ctl, merge_3d->idx);
 	}
 
 	if (phys_enc->hw_cdm) {
@@ -2326,7 +2330,7 @@ void dpu_encoder_helper_phys_cleanup(struct dpu_encoder_phys *phys_enc)
 	}
 
 	intf_cfg.stream_sel = 0; /* Don't care value for video mode */
-	intf_cfg.mode_3d = dpu_encoder_helper_get_3d_blend_mode(phys_enc);
+	intf_cfg.mode_3d = mode_3d;
 	intf_cfg.dsc = dpu_encoder_helper_get_dsc(phys_enc);
 	intf_cfg.cwb = dpu_enc->cwb_mask;
 
@@ -2335,8 +2339,8 @@ void dpu_encoder_helper_phys_cleanup(struct dpu_encoder_phys *phys_enc)
 	if (phys_enc->hw_wb)
 		intf_cfg.wb = phys_enc->hw_wb->idx;
 
-	if (phys_enc->hw_pp && phys_enc->hw_pp->merge_3d)
-		intf_cfg.merge_3d = phys_enc->hw_pp->merge_3d->idx;
+	if (merge_3d)
+		intf_cfg.merge_3d = merge_3d->idx;
 
 	if (ctl->ops.reset_intf_cfg)
 		ctl->ops.reset_intf_cfg(ctl, &intf_cfg);

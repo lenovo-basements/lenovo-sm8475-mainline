@@ -13,9 +13,12 @@
 #include <drm/drm_atomic.h>
 #include <drm/drm_atomic_uapi.h>
 #include <drm/drm_blend.h>
+#include <drm/drm_color_mgmt.h>
+#include <drm/drm_colorop.h>
 #include <drm/drm_damage_helper.h>
 #include <drm/drm_framebuffer.h>
 #include <drm/drm_gem_atomic_helper.h>
+#include <drm/drm_managed.h>
 
 #include <linux/soc/qcom/ubwc.h>
 
@@ -509,8 +512,330 @@ static void _dpu_plane_setup_pixel_ext(struct dpu_hw_scaler3_cfg *scale_cfg,
 	}
 }
 
+struct dpu_plane_cp {
+	struct kref ref;
+	u64 cookie;
+	const struct dpu_csc_cfg *csc;
+	struct dpu_hw_vig_igc *igc;
+	struct dpu_hw_vig_gamut *gamut;
+};
+
+static atomic64_t dpu_plane_cp_cookie = ATOMIC64_INIT(DPU_HW_CP_COOKIE_OFF);
+
+#define DPU_PLANE_CP_FIXED_MATRICES \
+	(BIT(DRM_COLOROP_FM_YCBCR601_LIMITED_RGB) | \
+	 BIT(DRM_COLOROP_FM_YCBCR601_FULL_RGB) | \
+	 BIT(DRM_COLOROP_FM_YCBCR709_LIMITED_RGB) | \
+	 BIT(DRM_COLOROP_FM_YCBCR709_FULL_RGB) | \
+	 BIT(DRM_COLOROP_FM_YCBCR2020_NC_LIMITED_RGB) | \
+	 BIT(DRM_COLOROP_FM_YCBCR2020_NC_FULL_RGB))
+
+static const struct dpu_csc_cfg *
+dpu_plane_cp_fixed_matrix(enum drm_colorop_fixed_matrix_type type)
+{
+	switch (type) {
+	case DRM_COLOROP_FM_YCBCR601_LIMITED_RGB:
+		return &dpu_csc10_YUV2RGB_601L;
+	case DRM_COLOROP_FM_YCBCR601_FULL_RGB:
+		return &dpu_csc10_YUV2RGB_601F;
+	case DRM_COLOROP_FM_YCBCR709_LIMITED_RGB:
+		return &dpu_csc10_YUV2RGB_709L;
+	case DRM_COLOROP_FM_YCBCR709_FULL_RGB:
+		return &dpu_csc10_YUV2RGB_709F;
+	case DRM_COLOROP_FM_YCBCR2020_NC_LIMITED_RGB:
+		return &dpu_csc10_YUV2RGB_2020L;
+	case DRM_COLOROP_FM_YCBCR2020_NC_FULL_RGB:
+		return &dpu_csc10_YUV2RGB_2020F;
+	default:
+		return NULL;
+	}
+}
+
+static void dpu_plane_cp_release(struct kref *ref)
+{
+	struct dpu_plane_cp *cp = container_of(ref, struct dpu_plane_cp, ref);
+
+	kfree(cp->igc);
+	kvfree(cp->gamut);
+	kfree(cp);
+}
+
+static void dpu_plane_cp_put(struct dpu_plane_cp *cp)
+{
+	if (cp)
+		kref_put(&cp->ref, dpu_plane_cp_release);
+}
+
+static bool dpu_plane_cp_needs_vig(const struct dpu_plane_state *pstate)
+{
+	return pstate->cp && (pstate->cp->igc || pstate->cp->gamut);
+}
+
+static int dpu_plane_cp_pack_igc(struct dpu_plane_cp *cp,
+				 const struct drm_property_blob *blob)
+{
+	const struct drm_color_lut32 *lut = blob->data;
+	int i;
+
+	if (drm_color_lut32_size(blob) != DPU_VIG_IGC_SIZE)
+		return -EINVAL;
+
+	cp->igc = kmalloc_obj(*cp->igc);
+	if (!cp->igc)
+		return -ENOMEM;
+
+	for (i = 0; i < DPU_VIG_IGC_SIZE; i++) {
+		cp->igc->c[0][i] = drm_color_lut32_extract(lut[i].green, DPU_VIG_IGC_BITS);
+		cp->igc->c[1][i] = drm_color_lut32_extract(lut[i].blue, DPU_VIG_IGC_BITS);
+		cp->igc->c[2][i] = drm_color_lut32_extract(lut[i].red, DPU_VIG_IGC_BITS);
+	}
+
+	return 0;
+}
+
+static int dpu_plane_cp_pack_gamut(struct dpu_plane_cp *cp,
+				   const struct drm_property_blob *blob)
+{
+	const int n = DPU_VIG_GAMUT_SIZE * DPU_VIG_GAMUT_SIZE * DPU_VIG_GAMUT_SIZE;
+	const struct drm_color_lut32 *lut = blob->data;
+	int i;
+
+	if (drm_color_lut32_size(blob) != n)
+		return -EINVAL;
+
+	cp->gamut = kvzalloc_obj(*cp->gamut);
+	if (!cp->gamut)
+		return -ENOMEM;
+
+	/* uAPI and hardware both run red fastest; points interleave over tables */
+	for (i = 0; i < n; i++) {
+		u32 r = drm_color_lut32_extract(lut[i].red, DPU_VIG_GAMUT_BITS);
+		u32 g = drm_color_lut32_extract(lut[i].green, DPU_VIG_GAMUT_BITS);
+		u32 b = drm_color_lut32_extract(lut[i].blue, DPU_VIG_GAMUT_BITS);
+
+		cp->gamut->c0[i % DPU_VIG_GAMUT_TABLES][i / DPU_VIG_GAMUT_TABLES] = r;
+		cp->gamut->c2_c1[i % DPU_VIG_GAMUT_TABLES][i / DPU_VIG_GAMUT_TABLES] =
+			g << 16 | b;
+	}
+
+	return 0;
+}
+
+static int dpu_plane_cp_build(struct drm_atomic_commit *state,
+			      struct drm_plane_state *plane_state,
+			      struct dpu_plane_cp **out)
+{
+	struct drm_colorop *colorop;
+	struct dpu_plane_cp *cp;
+	int ret = 0;
+
+	cp = kzalloc_obj(*cp);
+	if (!cp)
+		return -ENOMEM;
+	kref_init(&cp->ref);
+
+	for (colorop = plane_state->color_pipeline; colorop; colorop = colorop->next) {
+		struct drm_colorop_state *cs = drm_atomic_get_colorop_state(state, colorop);
+
+		if (IS_ERR(cs)) {
+			ret = PTR_ERR(cs);
+			goto err;
+		}
+		if (cs->bypass)
+			continue;
+
+		switch (colorop->type) {
+		case DRM_COLOROP_FIXED_MATRIX:
+			cp->csc = dpu_plane_cp_fixed_matrix(cs->fixed_matrix_type);
+			if (!cp->csc)
+				ret = -EINVAL;
+			break;
+		case DRM_COLOROP_1D_LUT:
+			/* no DATA blob: identity, leave the block off */
+			if (cs->data)
+				ret = dpu_plane_cp_pack_igc(cp, cs->data);
+			break;
+		case DRM_COLOROP_3D_LUT:
+			if (cs->data)
+				ret = dpu_plane_cp_pack_gamut(cp, cs->data);
+			break;
+		default:
+			ret = -EINVAL;
+			break;
+		}
+		if (ret)
+			goto err;
+	}
+
+	cp->cookie = atomic64_inc_return(&dpu_plane_cp_cookie);
+	*out = cp;
+	return 0;
+
+err:
+	dpu_plane_cp_put(cp);
+	return ret;
+}
+
+static int dpu_plane_atomic_check_color_pipeline(struct drm_plane *plane,
+						 struct drm_atomic_commit *state,
+						 struct drm_plane_state *new_state)
+{
+	struct drm_plane_state *old_state = drm_atomic_get_old_plane_state(state, plane);
+	struct dpu_plane_state *pstate = to_dpu_plane_state(new_state);
+	struct drm_colorop *colorop;
+	struct dpu_plane_cp *cp;
+	bool changed;
+	int ret;
+
+	/*
+	 * A client without DRM_CLIENT_CAP_PLANE_COLOR_PIPELINE cannot see or
+	 * clear COLOR_PIPELINE, so a pipeline left behind by a previous DRM
+	 * master would otherwise reject or recolour its commits (e.g. a
+	 * compositor after a VT switch). Give such commits the legacy path.
+	 * Kernel-internal commits (resume) also take it, until the owning
+	 * client's next commit.
+	 */
+	if (!new_state->color_pipeline || !state->plane_color_pipeline) {
+		dpu_plane_cp_put(pstate->cp);
+		pstate->cp = NULL;
+		return 0;
+	}
+
+	/* repack only when the pipeline or one of its colorops changed */
+	changed = !pstate->cp || !old_state ||
+		  old_state->color_pipeline != new_state->color_pipeline;
+	for (colorop = new_state->color_pipeline; colorop && !changed;
+	     colorop = colorop->next) {
+		const struct drm_colorop_state *new_cs =
+			drm_atomic_get_new_colorop_state(state, colorop);
+		const struct drm_colorop_state *old_cs =
+			drm_atomic_get_old_colorop_state(state, colorop);
+
+		if (new_cs && old_cs &&
+		    (new_cs->bypass != old_cs->bypass ||
+		     new_cs->data != old_cs->data ||
+		     new_cs->fixed_matrix_type != old_cs->fixed_matrix_type))
+			changed = true;
+	}
+
+	if (changed) {
+		ret = dpu_plane_cp_build(state, new_state, &cp);
+		if (ret)
+			return ret;
+		dpu_plane_cp_put(pstate->cp);
+		pstate->cp = cp;
+	}
+
+	/* the matrix converts YCbCr: required for YUV, impossible for RGB */
+	if (new_state->fb &&
+	    MSM_FORMAT_IS_YUV(msm_framebuffer_format(new_state->fb)) != !!pstate->cp->csc) {
+		drm_dbg_atomic(plane->dev,
+			       "[PLANE:%d:%s] fixed matrix must be set exactly for YUV\n",
+			       plane->base.id, plane->name);
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
+/* program the VIG LUTs of one pipe, if they differ from what it holds */
+static void _dpu_plane_setup_cp(struct dpu_sw_pipe *pipe,
+				const struct dpu_plane_cp *cp)
+{
+	struct dpu_hw_sspp *sspp = pipe->sspp;
+	bool active = cp && (cp->igc || cp->gamut);
+	u64 cookie = active ? cp->cookie : DPU_HW_CP_COOKIE_OFF;
+
+	if (!sspp->ops.setup_igc || !sspp->ops.setup_gamut)
+		return;
+
+	/* rect 1 has no color processing; rect 0's owner programs the pipe */
+	if (pipe->multirect_index == DPU_SSPP_RECT_1)
+		return;
+
+	if (sspp->cp_cookie == cookie)
+		return;
+
+	sspp->ops.setup_igc(sspp, active ? cp->igc : NULL);
+	sspp->ops.setup_gamut(sspp, active ? cp->gamut : NULL);
+	sspp->cp_cookie = cookie;
+}
+
+static void dpu_plane_colorop_release(struct drm_device *dev, void *data)
+{
+	drm_colorop_destroy(data);
+}
+
+static const struct drm_colorop_funcs dpu_plane_colorop_funcs = {
+	.destroy = drm_colorop_destroy,
+};
+
+static int dpu_plane_init_color_pipeline(struct drm_plane *plane)
+{
+	const struct drm_colorop_funcs *funcs = &dpu_plane_colorop_funcs;
+	const enum drm_colorop_lut1d_interpolation_type lut1d_interp =
+		DRM_COLOROP_LUT1D_INTERPOLATION_LINEAR;
+	const enum drm_colorop_lut3d_interpolation_type lut3d_interp =
+		DRM_COLOROP_LUT3D_INTERPOLATION_TETRAHEDRAL;
+	const u32 flags = DRM_COLOROP_FLAG_ALLOW_BYPASS;
+	struct drm_device *dev = plane->dev;
+	struct drm_prop_enum_list pipeline;
+	struct drm_colorop *ops[3];
+	int i, ret;
+
+	for (i = 0; i < ARRAY_SIZE(ops); i++) {
+		ops[i] = kzalloc_obj(*ops[i]);
+		if (!ops[i])
+			return -ENOMEM;
+
+		switch (i) {
+		case 0:
+			ret = drm_plane_colorop_fixed_matrix_init(dev, ops[i], plane, funcs,
+								  DPU_PLANE_CP_FIXED_MATRICES,
+								  flags);
+			break;
+		case 1:
+			ret = drm_plane_colorop_curve_1d_lut_init(dev, ops[i], plane, funcs,
+								  DPU_VIG_IGC_SIZE,
+								  lut1d_interp,
+								  flags);
+			break;
+		default:
+			ret = drm_plane_colorop_3dlut_init(dev, ops[i], plane, funcs,
+							   DPU_VIG_GAMUT_SIZE,
+							   lut3d_interp,
+							   flags);
+			break;
+		}
+		if (ret) {
+			if (ops[i]->dev)
+				drm_colorop_cleanup(ops[i]);
+			kfree(ops[i]);
+			return ret;
+		}
+
+		ret = drmm_add_action_or_reset(dev, dpu_plane_colorop_release, ops[i]);
+		if (ret)
+			return ret;
+
+		if (i)
+			drm_colorop_set_next_property(ops[i - 1], ops[i]);
+	}
+
+	pipeline.type = ops[0]->base.id;
+	pipeline.name = kasprintf(GFP_KERNEL, "Color Pipeline %d", ops[0]->base.id);
+	if (!pipeline.name)
+		return -ENOMEM;
+
+	ret = drm_plane_create_color_pipeline_property(plane, &pipeline, 1);
+	kfree(pipeline.name);
+
+	return ret;
+}
+
 static const struct dpu_csc_cfg *_dpu_plane_get_csc(struct dpu_sw_pipe *pipe,
-						    const struct msm_format *fmt)
+						    const struct msm_format *fmt,
+						    const struct dpu_plane_cp *cp)
 {
 	const struct dpu_csc_cfg *csc_ptr;
 
@@ -518,7 +843,7 @@ static const struct dpu_csc_cfg *_dpu_plane_get_csc(struct dpu_sw_pipe *pipe,
 		return NULL;
 
 	if (BIT(DPU_SSPP_CSC_10BIT) & pipe->sspp->cap->features)
-		csc_ptr = &dpu_csc10_YUV2RGB_601L;
+		csc_ptr = cp && cp->csc ? cp->csc : &dpu_csc10_YUV2RGB_601L;
 	else
 		csc_ptr = &dpu_csc_YUV2RGB_601L;
 
@@ -1190,6 +1515,10 @@ static int dpu_plane_atomic_check(struct drm_plane *plane,
 	if (ret)
 		return ret;
 
+	ret = dpu_plane_atomic_check_color_pipeline(plane, state, plane_state);
+	if (ret)
+		return ret;
+
 	if (!plane_state->visible)
 		return 0;
 
@@ -1204,7 +1533,9 @@ static int dpu_plane_atomic_check(struct drm_plane *plane,
 	    old_plane_state->crtc_w != plane_state->crtc_w ||
 	    old_plane_state->crtc_h != plane_state->crtc_h ||
 	    msm_framebuffer_format(old_plane_state->fb) !=
-	    msm_framebuffer_format(plane_state->fb))
+	    msm_framebuffer_format(plane_state->fb) ||
+	    dpu_plane_cp_needs_vig(to_dpu_plane_state(old_plane_state)) !=
+	    dpu_plane_cp_needs_vig(to_dpu_plane_state(plane_state)))
 		crtc_state->planes_changed = true;
 	return 0;
 }
@@ -1214,7 +1545,8 @@ static int dpu_plane_assign_resource_in_stage(struct dpu_sw_pipe *pipe,
 					      struct drm_plane_state *plane_state,
 					      struct dpu_global_state *global_state,
 					      struct drm_crtc *crtc,
-					      struct dpu_rm_sspp_requirements *reqs)
+					      struct dpu_rm_sspp_requirements *reqs,
+					      bool no_multirect)
 {
 	struct drm_plane *plane = plane_state->plane;
 	struct dpu_kms *dpu_kms = _dpu_plane_get_kms(plane);
@@ -1233,7 +1565,8 @@ static int dpu_plane_assign_resource_in_stage(struct dpu_sw_pipe *pipe,
 	if (drm_rect_width(&r_pipe_cfg->src_rect) == 0)
 		return 0;
 
-	if (dpu_plane_try_multirect_parallel(pipe, pipe_cfg, r_pipe, r_pipe_cfg,
+	if (!no_multirect &&
+	    dpu_plane_try_multirect_parallel(pipe, pipe_cfg, r_pipe, r_pipe_cfg,
 					      pipe->sspp,
 					      msm_framebuffer_format(plane_state->fb),
 					      dpu_kms->catalog->caps->max_linewidth))
@@ -1262,6 +1595,7 @@ static int dpu_plane_virtual_assign_resources(struct drm_crtc *crtc,
 	struct dpu_sw_pipe *pipe;
 	struct dpu_sw_pipe_cfg *pipe_cfg;
 	const struct msm_format *fmt;
+	bool own_vig;
 	int i, ret;
 
 	pstate = to_dpu_plane_state(plane_state);
@@ -1280,14 +1614,18 @@ static int dpu_plane_virtual_assign_resources(struct drm_crtc *crtc,
 		return ret;
 
 	fmt = msm_framebuffer_format(plane_state->fb);
+	/* active LUTs need VIG pipes of their own, see struct dpu_plane_cp */
+	own_vig = dpu_plane_cp_needs_vig(pstate);
 	reqs.yuv = MSM_FORMAT_IS_YUV(fmt);
+	reqs.cp = own_vig;
 	reqs.scale = (plane_state->src_w >> 16 != plane_state->crtc_w) ||
 		(plane_state->src_h >> 16 != plane_state->crtc_h);
 
 	reqs.rot90 = drm_rotation_90_or_270(plane_state->rotation);
 
 	for (i = 0; i < STAGES_PER_PLANE; i++) {
-		if (prev_adjacent_pstate[i] &&
+		if (!own_vig && prev_adjacent_pstate[i] &&
+		    !dpu_plane_cp_needs_vig(prev_adjacent_pstate[i]) &&
 		    dpu_plane_try_multirect_shared(pstate, prev_adjacent_pstate[i], fmt,
 						   dpu_kms->catalog->caps->max_linewidth,
 						   i))
@@ -1301,7 +1639,7 @@ static int dpu_plane_virtual_assign_resources(struct drm_crtc *crtc,
 		ret = dpu_plane_assign_resource_in_stage(pipe, pipe_cfg,
 							 plane_state,
 							 global_state,
-							 crtc, &reqs);
+							 crtc, &reqs, own_vig);
 		if (ret)
 			return ret;
 	}
@@ -1343,6 +1681,13 @@ static int dpu_plane_assign_resources(struct drm_crtc *crtc,
 				DRM_RECT_ARG(&r_pipe_cfg->src_rect),
 				dpu_kms->catalog->caps->max_linewidth);
 		return -E2BIG;
+	}
+
+	/* a wide plane would put its right half on rect 1, which has no LUTs */
+	if (dpu_plane_cp_needs_vig(pstate) &&
+	    (r_pipe->sspp || !pipe->sspp->ops.setup_igc)) {
+		DPU_DEBUG_PLANE(pdpu, "color pipeline needs one VIG rect\n");
+		return -EINVAL;
 	}
 
 	return dpu_plane_atomic_check_sspp(plane, state, crtc_state);
@@ -1395,7 +1740,8 @@ static void dpu_plane_flush_csc(struct dpu_plane *pdpu, struct dpu_sw_pipe *pipe
 	if (!pipe->sspp || !pipe->sspp->ops.setup_csc)
 		return;
 
-	csc_ptr = _dpu_plane_get_csc(pipe, format);
+	csc_ptr = _dpu_plane_get_csc(pipe, format,
+				     to_dpu_plane_state(pdpu->base.state)->cp);
 	if (!csc_ptr)
 		return;
 
@@ -1525,6 +1871,8 @@ static void dpu_plane_sspp_update_pipe(struct drm_plane *plane,
 
 	_dpu_plane_set_qos_lut(plane, pipe, fmt, pipe_cfg);
 
+	_dpu_plane_setup_cp(pipe, pstate->cp);
+
 	if (pipe->sspp->idx != SSPP_CURSOR0 &&
 	    pipe->sspp->idx != SSPP_CURSOR1)
 		_dpu_plane_set_ot_limit(plane, pipe, pipe_cfg, frame_rate);
@@ -1637,6 +1985,7 @@ static void dpu_plane_atomic_update(struct drm_plane *plane,
 static void dpu_plane_destroy_state(struct drm_plane *plane,
 		struct drm_plane_state *state)
 {
+	dpu_plane_cp_put(to_dpu_plane_state(state)->cp);
 	__drm_atomic_helper_plane_destroy_state(state);
 	kfree(to_dpu_plane_state(state));
 }
@@ -1667,6 +2016,8 @@ dpu_plane_duplicate_state(struct drm_plane *plane)
 	DPU_DEBUG_PLANE(pdpu, "\n");
 
 	pstate->pending = false;
+	if (pstate->cp)
+		kref_get(&pstate->cp->ref);
 
 	__drm_atomic_helper_plane_duplicate_state(plane, &pstate->base);
 
@@ -1726,6 +2077,11 @@ static void dpu_plane_atomic_print_state(struct drm_printer *p,
 		drm_printf(p, "\tdst[%d]=" DRM_RECT_FMT "\n", i,
 			   DRM_RECT_ARG(&pipe_cfg->dst_rect));
 	}
+
+	if (pstate->cp)
+		drm_printf(p, "\tcolor_pipeline: csc=%s igc=%s gamut=%s cookie=%llu\n",
+			   str_on_off(pstate->cp->csc), str_on_off(pstate->cp->igc),
+			   str_on_off(pstate->cp->gamut), pstate->cp->cookie);
 }
 
 static struct drm_plane_state *dpu_plane_create_state(struct drm_plane *plane)
@@ -1820,6 +2176,7 @@ static struct drm_plane *dpu_plane_init_common(struct drm_device *dev,
 					       bool inline_rotation,
 					       const uint32_t *format_list,
 					       uint32_t num_formats,
+					       bool color_pipeline,
 					       enum dpu_sspp pipe)
 {
 	struct drm_plane *plane = NULL;
@@ -1862,6 +2219,12 @@ static struct drm_plane *dpu_plane_init_common(struct drm_device *dev,
 
 	drm_plane_enable_fb_damage_clips(plane);
 
+	if (color_pipeline && type != DRM_PLANE_TYPE_CURSOR) {
+		ret = dpu_plane_init_color_pipeline(plane);
+		if (ret)
+			DPU_ERROR("failed to create color pipeline, rc = %d\n", ret);
+	}
+
 	DPU_DEBUG("%s created for pipe:%u id:%u\n", plane->name,
 					pipe, plane->base.id);
 	return plane;
@@ -1897,6 +2260,7 @@ struct drm_plane *dpu_plane_init(struct drm_device *dev,
 				      pipe_hw->cap->features & BIT(DPU_SSPP_INLINE_ROTATION),
 				      pipe_hw->cap->sblk->format_list,
 				      pipe_hw->cap->sblk->num_formats,
+				      pipe_hw->cap->sblk->cp_blk.len,
 				      pipe);
 	if (IS_ERR(plane))
 		return plane;
@@ -1925,6 +2289,7 @@ struct drm_plane *dpu_plane_init_virtual(struct drm_device *dev,
 	struct msm_drm_private *priv = dev->dev_private;
 	struct dpu_kms *kms = to_dpu_kms(priv->kms);
 	bool has_inline_rotation = false;
+	bool has_cp = false;
 	const u32 *format_list = NULL;
 	u32 num_formats = 0;
 	int i;
@@ -1935,6 +2300,9 @@ struct drm_plane *dpu_plane_init_virtual(struct drm_device *dev,
 
 		if (test_bit(DPU_SSPP_INLINE_ROTATION, &cfg->features))
 			has_inline_rotation = true;
+
+		if (cfg->sblk->cp_blk.len)
+			has_cp = true;
 
 		if (!format_list ||
 		    cfg->sblk->csc_blk.len) {
@@ -1947,6 +2315,7 @@ struct drm_plane *dpu_plane_init_virtual(struct drm_device *dev,
 				      has_inline_rotation,
 				      format_list,
 				      num_formats,
+				      has_cp,
 				      SSPP_NONE);
 	if (IS_ERR(plane))
 		return plane;

@@ -241,6 +241,21 @@ static const u32 wb2_formats_rgb_yuv[] = {
 	.rotation_cfg = NULL, \
 	}
 
+/* VIG with IGC v6 + GAMUT v6.1 (1D + 3D LUT) at 0x1d00 */
+#define _VIG_SBLK_CP(scaler_ver) \
+	{ \
+	.scaler_blk = {.name = "scaler", \
+		.version = scaler_ver, \
+		.base = 0xa00, .len = 0xa0,}, \
+	.csc_blk = {.name = "csc", \
+		.base = 0x1a00, .len = 0x100,}, \
+	.cp_blk = {.name = "cp", \
+		.base = 0x1d00, .len = 0x1d0, .version = 0x60001,}, \
+	.format_list = plane_formats_yuv, \
+	.num_formats = ARRAY_SIZE(plane_formats_yuv), \
+	.rotation_cfg = NULL, \
+	}
+
 /* kaanapali SSPP common configuration */
 #define _VIG_SBLK_REC0_REC1(scaler_ver) \
 	{ \
@@ -346,6 +361,9 @@ static const struct dpu_sspp_sub_blks dpu_vig_sblk_qseed3_3_0_rot_v2 =
 
 static const struct dpu_sspp_sub_blks dpu_vig_sblk_qseed3_3_1 =
 				_VIG_SBLK(SSPP_SCALER_VER(3, 1));
+
+static const struct dpu_sspp_sub_blks dpu_vig_sblk_qseed3_3_1_cp =
+				_VIG_SBLK_CP(SSPP_SCALER_VER(3, 1));
 
 static const struct dpu_sspp_sub_blks dpu_vig_sblk_qseed3_3_2 =
 				_VIG_SBLK(SSPP_SCALER_VER(3, 2));
