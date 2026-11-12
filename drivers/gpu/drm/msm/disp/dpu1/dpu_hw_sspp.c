@@ -2,6 +2,7 @@
 /* Copyright (c) 2015-2018, The Linux Foundation. All rights reserved.
  */
 
+#include <linux/bitfield.h>
 #include <linux/debugfs.h>
 
 #include "dpu_hwio.h"
@@ -542,6 +543,112 @@ void dpu_hw_sspp_setup_csc(struct dpu_hw_sspp *ctx,
 	dpu_hw_csc_setup(&ctx->hw, offset, data, csc10);
 }
 
+#define VIG_CP_OP_MODE			0x000
+#define VIG_GAMUT_TABLE_SEL		0x004
+#define VIG_GAMUT_C0			0x008
+#define VIG_GAMUT_C2_C1			0x00c
+#define VIG_IGC_INDEX			0x1b0
+#define VIG_IGC_DATA(c)			(0x1b4 + 4 * (c))
+#define VIG_IGC_DITHER			0x1c0
+#define VIG_IGC_LAST(c)			(0x1c4 + 4 * (c))
+
+#define VIG_CP_OP_GAMUT_EN		BIT(0)
+#define VIG_CP_OP_GAMUT_MODE		GENMASK(4, 2)
+#define VIG_CP_OP_GAMUT_MASK		GENMASK(4, 0)
+#define VIG_CP_OP_IGC_EN		BIT(8)
+#define VIG_CP_OP_IGC_SEL		BIT(9)
+
+/* GAMUT 17x17x17 has two memories, selected by the mode field */
+#define VIG_GAMUT_MODE_17		0
+#define VIG_GAMUT_MODE_17B		4
+#define VIG_GAMUT_TABLE_SEL_SECOND	BIT(11)
+#define VIG_GAMUT_TABLE_SEL_TBL(i)	(BIT(12) << (i))
+
+#define VIG_IGC_DATA_MASK		GENMASK(11, 0)
+
+static void dpu_hw_sspp_setup_igc(struct dpu_hw_sspp *ctx,
+				  const struct dpu_hw_vig_igc *igc)
+{
+	struct dpu_hw_blk_reg_map *hw = &ctx->hw;
+	u32 base = ctx->cap->sblk->cp_blk.base;
+	u32 op, c, i;
+	bool sel;
+
+	op = DPU_REG_READ(hw, base + VIG_CP_OP_MODE);
+	if (!igc) {
+		op &= ~(VIG_CP_OP_IGC_EN | VIG_CP_OP_IGC_SEL);
+		DPU_REG_WRITE(hw, base + VIG_CP_OP_MODE, op);
+		return;
+	}
+
+	/* the live copy is only in use while enabled */
+	sel = !!(op & VIG_CP_OP_IGC_SEL);
+	if (op & VIG_CP_OP_IGC_EN)
+		sel = !sel;
+
+	for (c = 0; c < 3; c++) {
+		const u16 *lut = igc->c[c];
+
+		DPU_REG_WRITE(hw, base + VIG_IGC_INDEX, 0);
+		for (i = 0; i < DPU_VIG_IGC_SIZE - 1; i += 2)
+			DPU_REG_WRITE(hw, base + VIG_IGC_DATA(c),
+				      (lut[i] & VIG_IGC_DATA_MASK) |
+				      (lut[i + 1] & VIG_IGC_DATA_MASK) << 16);
+		/*
+		 * Entry 256 (the end point of the last segment) goes through the
+		 * data port as a 129th write. Writing only the VIG_IGC_LAST()
+		 * registers, as the stock register path does, leaves c0 and c1
+		 * interpolating towards garbage at the top of the range.
+		 */
+		DPU_REG_WRITE(hw, base + VIG_IGC_DATA(c),
+			      lut[DPU_VIG_IGC_SIZE - 1] & VIG_IGC_DATA_MASK);
+	}
+	DPU_REG_WRITE(hw, base + VIG_IGC_DITHER, 0);
+	for (c = 0; c < 3; c++)
+		DPU_REG_WRITE(hw, base + VIG_IGC_LAST(c),
+			      igc->c[c][DPU_VIG_IGC_SIZE - 1] & VIG_IGC_DATA_MASK);
+
+	op &= ~VIG_CP_OP_IGC_SEL;
+	op |= VIG_CP_OP_IGC_EN | (sel ? VIG_CP_OP_IGC_SEL : 0);
+	DPU_REG_WRITE(hw, base + VIG_CP_OP_MODE, op);
+}
+
+static void dpu_hw_sspp_setup_gamut(struct dpu_hw_sspp *ctx,
+				    const struct dpu_hw_vig_gamut *gamut)
+{
+	struct dpu_hw_blk_reg_map *hw = &ctx->hw;
+	u32 base = ctx->cap->sblk->cp_blk.base;
+	u32 op, mode, sel, t, i;
+
+	op = DPU_REG_READ(hw, base + VIG_CP_OP_MODE);
+	if (!gamut) {
+		DPU_REG_WRITE(hw, base + VIG_CP_OP_MODE, op & ~VIG_CP_OP_GAMUT_MASK);
+		return;
+	}
+
+	/* load the memory that is not live */
+	mode = FIELD_GET(VIG_CP_OP_GAMUT_MODE, op);
+	if (op & VIG_CP_OP_GAMUT_EN)
+		mode = mode == VIG_GAMUT_MODE_17B ? VIG_GAMUT_MODE_17 : VIG_GAMUT_MODE_17B;
+	else
+		mode = VIG_GAMUT_MODE_17;
+	sel = mode == VIG_GAMUT_MODE_17B ? VIG_GAMUT_TABLE_SEL_SECOND : 0;
+
+	/* tables 1..3 hold one point less; the spare slot is written as 0 */
+	for (t = 0; t < DPU_VIG_GAMUT_TABLES; t++) {
+		DPU_REG_WRITE(hw, base + VIG_GAMUT_TABLE_SEL,
+			      VIG_GAMUT_TABLE_SEL_TBL(t) | sel);
+		for (i = 0; i < DPU_VIG_GAMUT_TBL_LEN; i++) {
+			DPU_REG_WRITE(hw, base + VIG_GAMUT_C2_C1, gamut->c2_c1[t][i]);
+			DPU_REG_WRITE(hw, base + VIG_GAMUT_C0, gamut->c0[t][i]);
+		}
+	}
+
+	op &= ~VIG_CP_OP_GAMUT_MASK;
+	op |= FIELD_PREP(VIG_CP_OP_GAMUT_MODE, mode) | VIG_CP_OP_GAMUT_EN;
+	DPU_REG_WRITE(hw, base + VIG_CP_OP_MODE, op);
+}
+
 static void dpu_hw_sspp_setup_solidfill(struct dpu_sw_pipe *pipe, u32 color)
 {
 	struct dpu_hw_sspp *ctx = pipe->sspp;
@@ -656,6 +763,11 @@ static void _setup_layer_ops(struct dpu_hw_sspp *c,
 	if (test_bit(DPU_SSPP_CDP, &features))
 		c->ops.setup_cdp = dpu_hw_sspp_setup_cdp;
 
+	if (c->cap->sblk->cp_blk.len) {
+		c->ops.setup_igc = dpu_hw_sspp_setup_igc;
+		c->ops.setup_gamut = dpu_hw_sspp_setup_gamut;
+	}
+
 	if (mdss_rev->core_major_ver >= 9)
 		c->ops.setup_clk_force_ctrl = dpu_hw_sspp_setup_clk_force_ctrl;
 }
@@ -747,6 +859,7 @@ struct dpu_hw_sspp *dpu_hw_sspp_init(struct drm_device *dev,
 	hw_pipe->cap = cfg;
 
 	hw_pipe->mdss_ver = mdss_rev;
+	hw_pipe->cp_cookie = DPU_HW_CP_COOKIE_UNKNOWN;
 
 	if (mdss_rev->core_major_ver >= 13)
 		dpu_hw_sspp_init_v13(hw_pipe, hw_pipe->cap->features, mdss_rev);

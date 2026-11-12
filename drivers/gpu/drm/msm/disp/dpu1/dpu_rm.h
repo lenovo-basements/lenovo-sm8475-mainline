@@ -45,6 +45,7 @@ struct dpu_rm_sspp_requirements {
 	bool yuv;
 	bool scale;
 	bool rot90;
+	bool cp;
 };
 
 /**

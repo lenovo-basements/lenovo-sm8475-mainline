@@ -1448,7 +1448,7 @@ static int __maybe_unused dpu_runtime_suspend(struct device *dev)
 
 static int __maybe_unused dpu_runtime_resume(struct device *dev)
 {
-	int rc = -1;
+	int rc = -1, i;
 	struct platform_device *pdev = to_platform_device(dev);
 	struct msm_drm_private *priv = platform_get_drvdata(pdev);
 	struct dpu_kms *dpu_kms = to_dpu_kms(priv->kms);
@@ -1464,6 +1464,10 @@ static int __maybe_unused dpu_runtime_resume(struct device *dev)
 	}
 
 	dpu_vbif_init_memtypes(dpu_kms);
+
+	for (i = 0; i < ARRAY_SIZE(dpu_kms->rm.hw_sspp); i++)
+		if (dpu_kms->rm.hw_sspp[i])
+			dpu_kms->rm.hw_sspp[i]->cp_cookie = DPU_HW_CP_COOKIE_UNKNOWN;
 
 	drm_for_each_encoder(encoder, ddev)
 		dpu_encoder_virt_runtime_resume(encoder);
