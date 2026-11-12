@@ -1878,6 +1878,18 @@ config REGULATOR_VQMMC_IPQ4019
 	  This driver provides support for the VQMMC LDO I/0
 	  voltage regulator of the IPQ4019 SD/EMMC controller.
 
+config REGULATOR_WL2864C
+	tristate "Will Semiconductor WL2864C camera PMIC"
+	depends on I2C && OF
+	select REGMAP_I2C
+	help
+	  Support for the seven LDOs of the Will Semiconductor WL2864C camera
+	  power management IC, used to power camera sensors and their lens
+	  actuators, for example on the Lenovo Legion Y700 (2023).
+
+	  Say Y or M here if your board has a WL2864C. When the camera sensor
+	  drivers are built in, build this driver in as well.
+
 config REGULATOR_WM831X
 	tristate "Wolfson Microelectronics WM831x PMIC regulators"
 	depends on MFD_WM831X
