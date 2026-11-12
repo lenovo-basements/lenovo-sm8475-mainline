@@ -696,6 +696,8 @@
 
 &remoteproc_cdsp {
 	firmware-name = "qcom/lenovo/tb320fc/cdsp/cdsp.mdt";
+	interconnects = <&nsp_noc MASTER_CDSP_PROC QCOM_ICC_TAG_ALWAYS
+			 &mc_virt SLAVE_EBI1 QCOM_ICC_TAG_ALWAYS>;
 	status = "okay";
 };
 
