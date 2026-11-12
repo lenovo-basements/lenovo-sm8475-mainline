@@ -443,7 +443,11 @@ int ath11k_mhi_start(struct ath11k_pci *ab_pci)
 		return ret;
 	}
 
-	ret = mhi_sync_power_up(ab_pci->mhi_ctrl);
+	if (ab->hw_params.static_window_map ||
+	    test_bit(ATH11K_FLAG_REGISTERED, &ab->dev_flags))
+		ret = mhi_sync_power_up(ab_pci->mhi_ctrl);
+	else
+		ret = mhi_async_power_up(ab_pci->mhi_ctrl);
 	if (ret) {
 		ath11k_warn(ab, "failed to power up mhi: %d", ret);
 		return ret;
