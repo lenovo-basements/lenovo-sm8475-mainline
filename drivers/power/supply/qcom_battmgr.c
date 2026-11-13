@@ -7,6 +7,7 @@
 #include <linux/atomic.h>
 #include <linux/auxiliary_bus.h>
 #include <linux/devm-helpers.h>
+#include <linux/math64.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/nvmem-consumer.h>
@@ -612,6 +613,19 @@ static int qcom_battmgr_bat_get_property(struct power_supply *psy,
 
 	if (psp == POWER_SUPPLY_PROP_CHARGE_BEHAVIOUR)
 		return qcom_battmgr_get_charge_behaviour(battmgr, val);
+
+	if (psp == POWER_SUPPLY_PROP_POWER_NOW &&
+	    battmgr->variant == QCOM_BATTMGR_LENOVO_SM8475) {
+		ret = qcom_battmgr_bat_sm8350_update(battmgr, POWER_SUPPLY_PROP_VOLTAGE_NOW);
+		if (!ret)
+			ret = qcom_battmgr_bat_sm8350_update(battmgr,
+							     POWER_SUPPLY_PROP_CURRENT_NOW);
+		if (ret < 0)
+			return ret;
+		val->intval = div_s64((s64)battmgr->status.voltage_now *
+				      battmgr->status.current_now, 1000000);
+		return 0;
+	}
 
 	if (battmgr->variant == QCOM_BATTMGR_SC8280XP ||
 	    battmgr->variant == QCOM_BATTMGR_X1E80100)
@@ -1906,6 +1920,9 @@ static int qcom_battmgr_probe(struct auxiliary_device *adev,
 	if (ret < 0)
 		return dev_err_probe(dev, ret,
 				     "failed to init battery charge control thresholds\n");
+
+	if (battmgr->variant == QCOM_BATTMGR_LENOVO_SM8475)
+		battmgr->unit = QCOM_BATTMGR_UNIT_mAh;
 
 	if (battmgr->variant == QCOM_BATTMGR_SC8280XP ||
 	    battmgr->variant == QCOM_BATTMGR_X1E80100) {
