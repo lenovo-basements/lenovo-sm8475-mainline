@@ -497,6 +497,26 @@ int msm_dsi_manager_connector_init(struct msm_dsi *msm_dsi,
 
 	drm_connector_attach_vrr_capable_property(connector);
 
+	/*
+	 * Panels without HDR emission can still take HDR10 from a compositor
+	 * when the display pipe tone maps it (DPU DSPP IGC + 3D LUT over
+	 * LUTDMA): advertise the HDR connector properties on request.
+	 */
+	if (of_property_read_bool(msm_dsi->pdev->dev.of_node,
+				  "qcom,dspp-hdr-tonemap")) {
+		const u32 colorspaces = BIT(DRM_MODE_COLORIMETRY_BT2020_RGB);
+
+		ret = drm_mode_create_hdmi_colorspace_property(connector,
+							       colorspaces);
+		if (!ret)
+			ret = drm_connector_attach_colorspace_property(connector);
+		if (ret)
+			DRM_ERROR("DSI%d: no Colorspace property: %d\n",
+				  msm_dsi->id, ret);
+		else
+			drm_connector_attach_hdr_output_metadata_property(connector);
+	}
+
 	return 0;
 }
 

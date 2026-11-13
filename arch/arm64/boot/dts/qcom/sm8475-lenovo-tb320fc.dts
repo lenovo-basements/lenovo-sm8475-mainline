@@ -396,6 +396,7 @@
 
 &mdss_dsi0 {
 	vdda-supply = <&vreg_l10c_1p2>;
+	qcom,dspp-hdr-tonemap;
 	qcom,dual-dsi-mode;
 	qcom,sync-dual-dsi;
 	qcom,master-dsi;
