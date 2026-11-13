@@ -6,11 +6,13 @@
  * picture. Each physical C-PHY link carries one 800-pixel DSC slice.
  */
 
+#include <linux/debugfs.h>
 #include <linux/delay.h>
 #include <linux/gpio/consumer.h>
 #include <linux/module.h>
 #include <linux/of_graph.h>
 #include <linux/regulator/consumer.h>
+#include <linux/seq_file.h>
 
 #include <drm/display/drm_dsc_helper.h>
 #include <drm/drm_connector.h>
@@ -399,6 +401,50 @@ static enum drm_panel_orientation asphalt_get_orientation(struct drm_panel *pane
 	return to_asphalt_panel(panel)->orientation;
 }
 
+static int asphalt_status_show(struct seq_file *m, void *data)
+{
+	static const struct {
+		u8 cmd;
+		const char *name;
+	} regs[] = {
+		{ MIPI_DCS_GET_POWER_MODE, "power_mode" },
+		{ MIPI_DCS_GET_DISPLAY_MODE, "display_mode" },
+		{ MIPI_DCS_GET_SIGNAL_MODE, "signal_mode" },
+		{ MIPI_DCS_GET_ERROR_COUNT_ON_DSI, "dsi_error_count" },
+	};
+	struct asphalt_panel *ctx = m->private;
+	unsigned int i, r;
+
+	if (!ctx->panel.prepared) {
+		seq_puts(m, "panel not prepared\n");
+		return 0;
+	}
+
+	for (i = 0; i < ARRAY_SIZE(ctx->dsi); i++) {
+		seq_printf(m, "link%u:", i);
+		for (r = 0; r < ARRAY_SIZE(regs); r++) {
+			u8 val = 0;
+			ssize_t ret;
+
+			ret = mipi_dsi_dcs_read(ctx->dsi[i], regs[r].cmd,
+						&val, sizeof(val));
+			if (ret == sizeof(val))
+				seq_printf(m, " %s=0x%02x", regs[r].name, val);
+			else
+				seq_printf(m, " %s=err(%zd)", regs[r].name, ret);
+		}
+		seq_putc(m, '\n');
+	}
+	return 0;
+}
+DEFINE_SHOW_ATTRIBUTE(asphalt_status);
+
+static void asphalt_debugfs_init(struct drm_panel *panel, struct dentry *root)
+{
+	debugfs_create_file("status", 0400, root, to_asphalt_panel(panel),
+			    &asphalt_status_fops);
+}
+
 static const struct drm_panel_funcs asphalt_panel_funcs = {
 	.prepare = asphalt_prepare,
 	.enable = asphalt_enable,
@@ -407,6 +453,7 @@ static const struct drm_panel_funcs asphalt_panel_funcs = {
 	.mode_valid = asphalt_mode_valid,
 	.mode_set = asphalt_mode_set,
 	.get_orientation = asphalt_get_orientation,
+	.debugfs_init = asphalt_debugfs_init,
 };
 
 static int asphalt_probe(struct mipi_dsi_device *dsi)
