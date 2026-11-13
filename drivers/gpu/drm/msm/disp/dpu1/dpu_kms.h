@@ -21,6 +21,13 @@
 #include "dpu_hw_lm.h"
 #include "dpu_hw_interrupts.h"
 #include "dpu_hw_top.h"
+#include "dpu_hw_reg_dma.h"
+
+enum {
+	DPU_GAMUT_TEST_OFF,		/* 3D LUT disabled */
+	DPU_GAMUT_TEST_IDENTITY,	/* out = in */
+	DPU_GAMUT_TEST_PROBE,		/* out = (1 - r, b, g) */
+};
 #include "dpu_rm.h"
 #include "dpu_core_perf.h"
 
@@ -64,6 +71,15 @@ struct dpu_kms {
 
 	/* io/register spaces: */
 	void __iomem *mmio, *vbif;
+	/* optional LUTDMA register region and engine (NULL when absent) */
+	void __iomem *regdma;
+	struct dpu_hw_reg_dma *reg_dma;
+	/*
+	 * debugfs test hook for the DSPP 3D LUT (no uAPI yet): -1 = never
+	 * touched (3D LUT left alone), else a DPU_GAMUT_TEST_* pattern loaded
+	 * on every DSPP at the next colour-management update.
+	 */
+	int gamut_test;
 
 	struct regulator *vdd;
 	struct regulator *mmagic;

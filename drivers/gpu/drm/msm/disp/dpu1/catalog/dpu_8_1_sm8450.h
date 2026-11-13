@@ -35,6 +35,33 @@ static const struct dpu_mdp_cfg sm8450_mdp = {
 	},
 };
 
+/*
+ * DSPP IGC (1D LUT, v4.0) and GAMUT (3D LUT, v4.3) have no MMIO data port;
+ * LUT data only loads through the reg_dma engine below. PCC/GC stay MMIO
+ * and are driven directly, as upstream already does.
+ *
+ * .len for igc/gamut3d is the span to the next known sub-block offset, not
+ * a confirmed register-window size (downstream's DT only gives offset +
+ * version for these two, unlike pcc/gc) - fine for now since nothing reads
+ * these fields yet; re-check before any code depends on it.
+ */
+static const struct dpu_dspp_sub_blks sm8450_dspp_sblk = {
+	.pcc = {.name = "pcc", .base = 0x1700,
+		.len = 0x90, .version = 0x40000},
+	.gc = {.name = "gc", .base = 0x17c0,
+		.len = 0x40, .version = 0x10008},
+	.igc = {.name = "igc", .base = 0x1260,
+		.len = 0x1700 - 0x1260, .version = 0x40000},
+	.gamut3d = {.name = "gamut", .base = 0x1000,
+		.len = 0x1260 - 0x1000, .version = 0x40003},
+};
+
+/* DB queue at offset 0 of the "regdma" region, SB queue at 0x400 */
+static const struct dpu_reg_dma_cfg sm8450_reg_dma = {
+	.name = "reg_dma", .base = 0x0, .sb_base = 0x400,
+	.version = 0x00020000,
+};
+
 static const struct dpu_ctl_cfg sm8450_ctl[] = {
 	{
 		.name = "ctl_0", .id = CTL_0,
@@ -185,19 +212,19 @@ static const struct dpu_dspp_cfg sm8450_dspp[] = {
 	{
 		.name = "dspp_0", .id = DSPP_0,
 		.base = 0x54000, .len = 0x1800,
-		.sblk = &sdm845_dspp_sblk,
+		.sblk = &sm8450_dspp_sblk,
 	}, {
 		.name = "dspp_1", .id = DSPP_1,
 		.base = 0x56000, .len = 0x1800,
-		.sblk = &sdm845_dspp_sblk,
+		.sblk = &sm8450_dspp_sblk,
 	}, {
 		.name = "dspp_2", .id = DSPP_2,
 		.base = 0x58000, .len = 0x1800,
-		.sblk = &sdm845_dspp_sblk,
+		.sblk = &sm8450_dspp_sblk,
 	}, {
 		.name = "dspp_3", .id = DSPP_3,
 		.base = 0x5a000, .len = 0x1800,
-		.sblk = &sdm845_dspp_sblk,
+		.sblk = &sm8450_dspp_sblk,
 	},
 };
 
@@ -387,6 +414,7 @@ const struct dpu_mdss_cfg dpu_sm8450_cfg = {
 	.mdss_ver = &sm8450_mdss_ver,
 	.caps = &sm8450_dpu_caps,
 	.mdp = &sm8450_mdp,
+	.reg_dma = &sm8450_reg_dma,
 	.cdm = &dpu_cdm_5_x,
 	.ctl_count = ARRAY_SIZE(sm8450_ctl),
 	.ctl = sm8450_ctl,

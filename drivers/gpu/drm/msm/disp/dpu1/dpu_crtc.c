@@ -27,6 +27,7 @@
 #include "dpu_hw_lm.h"
 #include "dpu_hw_ctl.h"
 #include "dpu_hw_dspp.h"
+#include "dpu_hdr_tonemap_lut.h"
 #include "dpu_crtc.h"
 #include "dpu_plane.h"
 #include "dpu_encoder.h"
@@ -844,6 +845,143 @@ static void _dpu_crtc_get_gc_lut(struct drm_crtc_state *state,
 	gc_lut->flags = 0;
 }
 
+static void _dpu_crtc_get_igc_lut(struct drm_crtc_state *state,
+				  struct dpu_hw_igc_lut *igc_lut)
+{
+	struct drm_color_lut *lut = state->degamma_lut->data;
+	int i;
+
+	for (i = 0; i < DPU_IGC_LUT_SIZE; i++) {
+		igc_lut->c[0][i] = drm_color_lut_extract(lut[i].red, 12);
+		igc_lut->c[1][i] = drm_color_lut_extract(lut[i].green, 12);
+		igc_lut->c[2][i] = drm_color_lut_extract(lut[i].blue, 12);
+	}
+}
+
+/* debugfs dspp_gamut_test patterns, see dpu_kms.h */
+static struct dpu_hw_gamut3d_lut *_dpu_crtc_gamut_test_lut(int mode)
+{
+	struct dpu_hw_gamut3d_lut *lut;
+	int r, g, b;
+
+	if (mode == DPU_GAMUT_TEST_OFF)
+		return NULL;
+	lut = kvzalloc_obj(*lut);
+	if (!lut)
+		return ERR_PTR(-ENOMEM);
+
+	for (b = 0; b < DPU_GAMUT3D_NODES; b++)
+		for (g = 0; g < DPU_GAMUT3D_NODES; g++)
+			for (r = 0; r < DPU_GAMUT3D_NODES; r++) {
+				u16 *o = lut->rgb[r + DPU_GAMUT3D_NODES * g +
+						  DPU_GAMUT3D_NODES * DPU_GAMUT3D_NODES * b];
+				u16 vr = r * 4095 / (DPU_GAMUT3D_NODES - 1);
+				u16 vg = g * 4095 / (DPU_GAMUT3D_NODES - 1);
+				u16 vb = b * 4095 / (DPU_GAMUT3D_NODES - 1);
+
+				if (mode == DPU_GAMUT_TEST_PROBE) {
+					o[0] = 4095 - vr;
+					o[1] = vb;
+					o[2] = vg;
+				} else {
+					o[0] = vr;
+					o[1] = vg;
+					o[2] = vb;
+				}
+			}
+	return lut;
+}
+
+/* stage a DSPP sub-block flush on every mixer of the CRTC */
+static void _dpu_crtc_stage_dspp_flush(struct dpu_crtc_state *cstate, u32 blk)
+{
+	struct dpu_crtc_mixer *m = cstate->mixers;
+	int i;
+
+	for (i = 0; i < cstate->num_mixers; i++)
+		if (m[i].hw_dspp)
+			m[i].lm_ctl->ops.update_pending_flush_dspp(m[i].lm_ctl,
+								   m[i].hw_dspp->idx,
+								   blk);
+}
+
+/*
+ * DSPP IGC + 3D LUT over LUTDMA. As downstream does, each feature is one
+ * packet whose decode-select covers every DSPP of the CRTC, broadcast by the
+ * hardware: separate back-to-back LUTBUS packets per DSPP left the first
+ * DSPP's LUT RAM unloaded on the bonded-DSI panel (op modes landed, LUT
+ * data did not).
+ */
+static void _dpu_crtc_setup_lutdma(struct drm_crtc_state *state,
+				   struct dpu_crtc_state *cstate,
+				   struct dpu_hw_reg_dma *reg_dma,
+				   const struct dpu_hw_gamut3d_lut *gamut_lut)
+{
+	struct dpu_crtc_mixer *mixer = cstate->mixers;
+	struct dpu_hw_igc_lut *igc_lut = NULL;
+	struct dpu_hw_dspp *owner = NULL;
+	struct dpu_hw_ctl *ctl = NULL;
+	bool queued = false;
+	u32 mask = 0;
+	int i, ret;
+
+	if (!reg_dma)
+		return;
+
+	for (i = 0; i < cstate->num_mixers; i++) {
+		if (!mixer[i].hw_dspp)
+			continue;
+		if (!owner) {
+			owner = mixer[i].hw_dspp;
+			ctl = mixer[i].lm_ctl;
+		}
+		mask |= DPU_REG_DMA_BLK_DSPP(mixer[i].hw_dspp->idx - DSPP_0);
+	}
+	if (!owner)
+		return;
+
+	if (owner->ops.setup_igc) {
+		if (!cstate->hdr_tonemap && state->degamma_lut) {
+			igc_lut = kzalloc_obj(*igc_lut);
+			if (!igc_lut)
+				return;
+			_dpu_crtc_get_igc_lut(state, igc_lut);
+		}
+		/* HDR mode owns the IGC (PQ shaper); DEGAMMA_LUT is ignored */
+		ret = owner->ops.setup_igc(owner, reg_dma, ctl, mask,
+					   cstate->hdr_tonemap ?
+					   &dpu_hdr_igc_lut : igc_lut);
+		kfree(igc_lut);
+		if (ret)
+			DRM_ERROR("dspp mask %#x igc update failed: %d\n", mask, ret);
+		else
+			_dpu_crtc_stage_dspp_flush(cstate, DPU_DSPP_IGC);
+		queued |= !ret;
+	}
+
+	if (owner->ops.setup_gamut3d) {
+		ret = owner->ops.setup_gamut3d(owner, reg_dma, ctl, mask,
+					       cstate->hdr_tonemap ?
+					       &dpu_hdr_gamut_lut : gamut_lut);
+		if (ret)
+			DRM_ERROR("dspp mask %#x 3d lut update failed: %d\n",
+				  mask, ret);
+		else
+			_dpu_crtc_stage_dspp_flush(cstate, DPU_DSPP_GAMUT);
+		queued |= !ret;
+	}
+
+	/* SB packets run on the CTL DSPP_SB flush of this commit */
+	if (queued && dpu_reg_dma_has_sb(reg_dma)) {
+		ret = dpu_reg_dma_last_cmd_sb(reg_dma, ctl);
+		if (ret)
+			DRM_ERROR("dspp mask %#x sb lutdma kick failed: %d\n",
+				  mask, ret);
+		else
+			_dpu_crtc_stage_dspp_flush(cstate, DPU_DSPP_SB);
+	}
+}
+
 static void _dpu_crtc_setup_cp_blocks(struct drm_crtc *crtc)
 {
 	struct drm_crtc_state *state = crtc->state;
@@ -851,6 +989,10 @@ static void _dpu_crtc_setup_cp_blocks(struct drm_crtc *crtc)
 	struct dpu_crtc_mixer *mixer = cstate->mixers;
 	struct dpu_hw_pcc_cfg cfg;
 	struct dpu_hw_gc_lut *gc_lut;
+	struct dpu_kms *dpu_kms = _dpu_crtc_get_kms(crtc);
+	struct dpu_hw_reg_dma *reg_dma = dpu_kms->reg_dma;
+	struct dpu_hw_gamut3d_lut *gamut_lut = NULL;
+	int gamut_test = READ_ONCE(dpu_kms->gamut_test);
 	struct dpu_hw_ctl *ctl;
 	struct dpu_hw_dspp *dspp;
 	int i;
@@ -858,6 +1000,12 @@ static void _dpu_crtc_setup_cp_blocks(struct drm_crtc *crtc)
 
 	if (!state->color_mgmt_changed && !drm_atomic_crtc_needs_modeset(state))
 		return;
+
+	if (reg_dma && gamut_test >= 0) {
+		gamut_lut = _dpu_crtc_gamut_test_lut(gamut_test);
+		if (IS_ERR(gamut_lut))
+			gamut_lut = NULL;	/* falls back to "off" */
+	}
 
 	for (i = 0; i < cstate->num_mixers; i++) {
 		ctl = mixer[i].lm_ctl;
@@ -896,6 +1044,9 @@ static void _dpu_crtc_setup_cp_blocks(struct drm_crtc *crtc)
 				mixer[i].hw_dspp->idx, DPU_DSPP_GC);
 		}
 	}
+
+	_dpu_crtc_setup_lutdma(state, cstate, reg_dma, gamut_lut);
+	kvfree(gamut_lut);
 }
 
 static void dpu_crtc_atomic_begin(struct drm_crtc *crtc,
@@ -1403,7 +1554,8 @@ static struct msm_display_topology dpu_crtc_get_topology(
 	 *
 	 * If DSC is enabled, use 2 LMs for 2:2:1 topology
 	 *
-	 * Add dspps to the reservation requirements if ctm or gamma_lut are requested
+	 * Add dspps to the reservation requirements if ctm, gamma_lut or
+	 * degamma_lut are requested
 	 *
 	 * Only hardcode num_lm to 2 for cases where num_intf == 2 and CWB is not
 	 * enabled. This is because in cases where CWB is enabled, num_intf will
@@ -1423,7 +1575,8 @@ static struct msm_display_topology dpu_crtc_get_topology(
 	else
 		topology.num_lm = 1;
 
-	if (crtc_state->ctm || crtc_state->gamma_lut)
+	if (crtc_state->ctm || crtc_state->gamma_lut || crtc_state->degamma_lut ||
+	    to_dpu_crtc_state(crtc_state)->hdr_tonemap)
 		topology.num_dspp = topology.num_lm;
 
 	return topology;
@@ -1541,7 +1694,8 @@ static int dpu_crtc_atomic_check(struct drm_crtc *crtc,
 	 */
 	if (crtc_state->mode_changed || crtc_state->connectors_changed ||
 	    (crtc_state->color_mgmt_changed &&
-	     (crtc_state->ctm || crtc_state->gamma_lut) &&
+	     (crtc_state->ctm || crtc_state->gamma_lut ||
+	      crtc_state->degamma_lut || cstate->hdr_tonemap) &&
 	     (!cstate->num_mixers || !cstate->mixers[0].hw_dspp))) {
 		rc = dpu_crtc_assign_resources(crtc, crtc_state);
 		if (rc < 0)
@@ -1921,11 +2075,17 @@ struct drm_crtc *dpu_crtc_init(struct drm_device *dev, struct drm_plane *plane,
 	if (dpu_kms->catalog->dspp_count) {
 		const struct dpu_dspp_cfg *dspp = &dpu_kms->catalog->dspp[0];
 
+		/* the DSPP IGC LUT can only be loaded through LUTDMA */
+		unsigned int degamma_size =
+			(dspp->sblk->igc.version && dpu_kms->reg_dma) ?
+			DPU_IGC_LUT_SIZE : 0;
+
 		if (dspp->sblk->gc.base) {
 			drm_mode_crtc_set_gamma_size(crtc, DPU_GAMMA_LUT_SIZE);
-			drm_crtc_enable_color_mgmt(crtc, 0, true, DPU_GAMMA_LUT_SIZE);
+			drm_crtc_enable_color_mgmt(crtc, degamma_size, true,
+						   DPU_GAMMA_LUT_SIZE);
 		} else {
-			drm_crtc_enable_color_mgmt(crtc, 0, true, 0);
+			drm_crtc_enable_color_mgmt(crtc, degamma_size, true, 0);
 		}
 	}
 

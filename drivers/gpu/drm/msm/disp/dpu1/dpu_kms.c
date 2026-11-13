@@ -288,6 +288,110 @@ static void dpu_debugfs_sspp_init(struct dpu_kms *dpu_kms, struct dentry *debugf
 	}
 }
 
+/*
+ * reg_dma self-test: "echo <ctl> <dspp> > reg_dma_test" (indices from 0).
+ * Loads two patterns into DSPP<dspp> PCC_RED_R through the LUTDMA engine on
+ * CTL<ctl>'s DB queue, reads each back over MMIO, then restores the original
+ * value. Only meant for a DSPP whose PCC is disabled (no visible effect).
+ */
+static ssize_t dpu_debugfs_reg_dma_test_write(struct file *file,
+					      const char __user *ubuf,
+					      size_t count, loff_t *ppos)
+{
+	struct dpu_kms *dpu_kms = file->private_data;
+	static const u32 patterns[] = { 0x2a5a, 0x15a5 };
+	struct dpu_reg_dma_buf *buf;
+	struct dpu_hw_ctl *ctl;
+	void __iomem *reg;
+	unsigned int ctl_i, dspp_i, i;
+	char kbuf[32];
+	u32 orig, val, off;
+	int ret;
+
+	if (!dpu_kms->reg_dma)
+		return -ENODEV;
+	if (count >= sizeof(kbuf))
+		return -EINVAL;
+	if (copy_from_user(kbuf, ubuf, count))
+		return -EFAULT;
+	kbuf[count] = '\0';
+	if (sscanf(kbuf, "%u %u", &ctl_i, &dspp_i) != 2 ||
+	    ctl_i >= ARRAY_SIZE(dpu_kms->rm.ctl_blks) ||
+	    !dpu_kms->rm.ctl_blks[ctl_i] ||
+	    dspp_i >= dpu_kms->catalog->dspp_count ||
+	    !dpu_kms->catalog->dspp[dspp_i].sblk->pcc.base)
+		return -EINVAL;
+
+	ctl = to_dpu_hw_ctl(dpu_kms->rm.ctl_blks[ctl_i]);
+	off = dpu_kms->catalog->dspp[dspp_i].sblk->pcc.base + 0x10; /* RED_R */
+	reg = dpu_kms->mmio + dpu_kms->catalog->dspp[dspp_i].base + off;
+
+	buf = dpu_reg_dma_buf_alloc(dpu_kms->reg_dma, 64);
+	if (IS_ERR(buf))
+		return PTR_ERR(buf);
+
+	ret = pm_runtime_resume_and_get(&dpu_kms->pdev->dev);
+	if (ret)
+		goto free;
+
+	orig = readl(reg);
+	for (i = 0; i < ARRAY_SIZE(patterns); i++) {
+		dpu_reg_dma_buf_reset(buf);
+		ret = dpu_reg_dma_decode_sel(buf, DPU_REG_DMA_BLK_DSPP(dspp_i));
+		ret = ret ?: dpu_reg_dma_write(buf, off, patterns[i]);
+		ret = ret ?: dpu_reg_dma_queue(dpu_kms->reg_dma, ctl, buf);
+		ret = ret ?: dpu_reg_dma_flush(dpu_kms->reg_dma, ctl, true);
+		val = readl(reg);
+		DRM_INFO("reg_dma test: ctl%u dspp%u %#x: %#x -> %#x, read %#x, %d %s\n",
+			 ctl_i, dspp_i, off, orig, patterns[i], val, ret,
+			 (!ret && val == patterns[i]) ? "PASS" : "FAIL");
+		if (ret || val != patterns[i]) {
+			ret = ret ?: -EIO;
+			break;
+		}
+	}
+	writel(orig, reg);
+	pm_runtime_put_sync(&dpu_kms->pdev->dev);
+free:
+	dpu_reg_dma_buf_free(dpu_kms->reg_dma, buf);
+	return ret ?: count;
+}
+
+/*
+ * "echo off|identity|probe > dspp_gamut_test": the next colour-management
+ * update of any CRTC loads that pattern into its DSPP 3D LUT. Test only.
+ */
+static ssize_t dpu_debugfs_gamut_test_write(struct file *file,
+					    const char __user *ubuf,
+					    size_t count, loff_t *ppos)
+{
+	static const char *const names[] = { "off", "identity", "probe" };
+	struct dpu_kms *dpu_kms = file->private_data;
+	char kbuf[16];
+	int i;
+
+	if (count >= sizeof(kbuf))
+		return -EINVAL;
+	if (copy_from_user(kbuf, ubuf, count))
+		return -EFAULT;
+	kbuf[count] = '\0';
+	i = sysfs_match_string(names, strim(kbuf));
+	if (i < 0)
+		return i;
+	WRITE_ONCE(dpu_kms->gamut_test, i);
+	return count;
+}
+
+static const struct file_operations dpu_debugfs_gamut_test_fops = {
+	.open = simple_open,
+	.write = dpu_debugfs_gamut_test_write,
+};
+
+static const struct file_operations dpu_debugfs_reg_dma_test_fops = {
+	.open = simple_open,
+	.write = dpu_debugfs_reg_dma_test_write,
+};
+
 static int dpu_kms_debugfs_init(struct msm_kms *kms, struct drm_minor *minor)
 {
 	struct dpu_kms *dpu_kms = to_dpu_kms(kms);
@@ -309,6 +413,12 @@ static int dpu_kms_debugfs_init(struct msm_kms *kms, struct drm_minor *minor)
 	dpu_debugfs_vbif_init(dpu_kms, entry);
 	dpu_debugfs_core_irq_init(dpu_kms, entry);
 	dpu_debugfs_sspp_init(dpu_kms, entry);
+	if (dpu_kms->reg_dma) {
+		debugfs_create_file("reg_dma_test", 0200, entry, dpu_kms,
+				    &dpu_debugfs_reg_dma_test_fops);
+		debugfs_create_file("dspp_gamut_test", 0200, entry, dpu_kms,
+				    &dpu_debugfs_gamut_test_fops);
+	}
 
 	return dpu_core_perf_debugfs_init(dpu_kms, entry);
 }
@@ -449,15 +559,54 @@ static void dpu_kms_disable_commit(struct msm_kms *kms)
 	pm_runtime_put_sync(&dpu_kms->pdev->dev);
 }
 
+/* PQ (ST 2084) static metadata with BT.2020 RGB: the compositor sends HDR10 */
+static bool dpu_kms_conn_wants_hdr(const struct drm_connector_state *s)
+{
+	const struct hdr_output_metadata *md;
+
+	if (s->colorspace != DRM_MODE_COLORIMETRY_BT2020_RGB ||
+	    !s->hdr_output_metadata ||
+	    s->hdr_output_metadata->length < sizeof(*md))
+		return false;
+	md = s->hdr_output_metadata->data;
+	return md->metadata_type == HDMI_STATIC_METADATA_TYPE1 &&
+	       md->hdmi_metadata_type1.eotf == HDMI_EOTF_SMPTE_ST2084;
+}
+
 static int dpu_kms_check_mode_changed(struct msm_kms *kms, struct drm_atomic_commit *state)
 {
+	struct dpu_kms *dpu_kms = to_dpu_kms(kms);
 	struct drm_crtc_state *new_crtc_state;
 	struct drm_crtc_state *old_crtc_state;
+	struct drm_connector_state *conn_state;
+	struct drm_connector *conn;
 	struct drm_crtc *crtc;
 	int i;
 
 	for_each_oldnew_crtc_in_state(state, crtc, old_crtc_state, new_crtc_state, i)
 		dpu_crtc_check_mode_changed(old_crtc_state, new_crtc_state);
+
+	/*
+	 * Connectors that advertise HDR10 (DT opt-in, DSPP tone mapping): a
+	 * change of Colorspace / HDR_OUTPUT_METADATA must reprogram the DSPP,
+	 * and such a commit may not carry the CRTC on its own.
+	 */
+	for_each_new_connector_in_state(state, conn, conn_state, i) {
+		struct dpu_crtc_state *cstate;
+		bool hdr;
+
+		if (!conn->colorspace_property || !conn_state->crtc)
+			continue;
+		hdr = dpu_kms->reg_dma && dpu_kms_conn_wants_hdr(conn_state);
+		new_crtc_state = drm_atomic_get_crtc_state(state, conn_state->crtc);
+		if (IS_ERR(new_crtc_state))
+			return PTR_ERR(new_crtc_state);
+		cstate = to_dpu_crtc_state(new_crtc_state);
+		if (cstate->hdr_tonemap != hdr) {
+			cstate->hdr_tonemap = hdr;
+			new_crtc_state->color_mgmt_changed = true;
+		}
+	}
 
 	return 0;
 }
@@ -890,6 +1039,10 @@ static void _dpu_kms_hw_destroy(struct dpu_kms *dpu_kms)
 {
 	dpu_kms->hw_intr = NULL;
 
+	/* buffers live in the KMS address space, so before the MMU goes */
+	dpu_hw_reg_dma_destroy(dpu_kms->reg_dma);
+	dpu_kms->reg_dma = NULL;
+
 	/* safe to call these more than once during shutdown */
 	_dpu_kms_mmu_destroy(dpu_kms);
 
@@ -1184,6 +1337,19 @@ static int dpu_kms_hw_init(struct msm_kms *kms)
 		goto err_pm_put;
 	}
 
+	dpu_kms->gamut_test = -1;
+	if (dpu_kms->catalog->reg_dma && dpu_kms->regdma) {
+		dpu_kms->reg_dma = dpu_hw_reg_dma_init(dev, kms->vm,
+						       dpu_kms->regdma,
+						       dpu_kms->catalog->reg_dma);
+		if (IS_ERR(dpu_kms->reg_dma)) {
+			/* optional: only DSPP LUT colour features need it */
+			DPU_ERROR("reg_dma init failed: %ld\n",
+				  PTR_ERR(dpu_kms->reg_dma));
+			dpu_kms->reg_dma = NULL;
+		}
+	}
+
 	dpu_kms->mdss = qcom_ubwc_config_get_data();
 	if (IS_ERR(dpu_kms->mdss)) {
 		rc = PTR_ERR(dpu_kms->mdss);
@@ -1372,6 +1538,10 @@ static int dpu_kms_mmap_dpu(struct dpu_kms *dpu_kms)
 		dpu_kms->vbif = NULL;
 		return ret;
 	}
+
+	dpu_kms->regdma = msm_ioremap_quiet(pdev, "regdma");
+	if (IS_ERR(dpu_kms->regdma))
+		dpu_kms->regdma = NULL;
 
 	return 0;
 }

@@ -52,6 +52,29 @@ struct dpu_hw_gc_lut {
 	__u32 c2[PGC_TBL_LEN];
 };
 
+struct dpu_hw_ctl;
+struct dpu_hw_reg_dma;
+
+#define DPU_IGC_LUT_SIZE	257	/* 256 nodes + end point */
+#define DPU_GAMUT3D_NODES	17	/* 17x17x17 */
+#define DPU_GAMUT3D_SIZE	(DPU_GAMUT3D_NODES * DPU_GAMUT3D_NODES * DPU_GAMUT3D_NODES)
+
+/**
+ * struct dpu_hw_igc_lut - DSPP IGC (1D, "degamma") LUT, 12-bit entries
+ * @c: [0] red, [1] green, [2] blue; entry i is the output for input i/256
+ */
+struct dpu_hw_igc_lut {
+	u16 c[3][DPU_IGC_LUT_SIZE];
+};
+
+/**
+ * struct dpu_hw_gamut3d_lut - DSPP 17^3 3D LUT, 12-bit entries
+ * @rgb: node r + 17 * g + 289 * b, components in r, g, b order
+ */
+struct dpu_hw_gamut3d_lut {
+	u16 rgb[DPU_GAMUT3D_SIZE][3];
+};
+
 /**
  * struct dpu_hw_dspp_ops - interface to the dspp hardware driver functions
  * Caller must call the init function to get the dspp context for each dspp
@@ -72,6 +95,32 @@ struct dpu_hw_dspp_ops {
 	 */
 	void (*setup_gc)(struct dpu_hw_dspp *ctx, struct dpu_hw_gc_lut *gc_lut);
 
+	/**
+	 * setup_igc - queue a DSPP IGC update on the LUTDMA engine
+	 * @ctx: Pointer to dspp context (owner of the descriptor buffer)
+	 * @rd: LUTDMA engine (the IGC LUT has no MMIO data port)
+	 * @ctl: CTL whose next kickoff triggers the update
+	 * @dspp_mask: DPU_REG_DMA_BLK_DSPP() bits of every DSPP to load; one
+	 *	packet is broadcast to all of them (as downstream does)
+	 * @lut: LUT, or NULL to disable IGC
+	 * Return: 0 on success, negative errno otherwise
+	 */
+	int (*setup_igc)(struct dpu_hw_dspp *ctx, struct dpu_hw_reg_dma *rd,
+			 struct dpu_hw_ctl *ctl, u32 dspp_mask,
+			 const struct dpu_hw_igc_lut *lut);
+
+	/**
+	 * setup_gamut3d - queue a DSPP 3D LUT update on the LUTDMA engine
+	 * @ctx: Pointer to dspp context (owner of the descriptor buffer)
+	 * @rd: LUTDMA engine (the 3D LUT has no MMIO data port)
+	 * @ctl: CTL whose next kickoff triggers the update
+	 * @dspp_mask: DPU_REG_DMA_BLK_DSPP() bits of every DSPP to load
+	 * @lut: LUT, or NULL to disable the 3D LUT
+	 * Return: 0 on success, negative errno otherwise
+	 */
+	int (*setup_gamut3d)(struct dpu_hw_dspp *ctx, struct dpu_hw_reg_dma *rd,
+			     struct dpu_hw_ctl *ctl, u32 dspp_mask,
+			     const struct dpu_hw_gamut3d_lut *lut);
 };
 
 /**
