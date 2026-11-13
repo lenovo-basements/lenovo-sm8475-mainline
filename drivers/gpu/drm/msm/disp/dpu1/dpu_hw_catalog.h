@@ -78,10 +78,16 @@ enum {
  * DSPP sub-blocks
  * @DPU_DSPP_PCC             Panel color correction block
  * @DPU_DSPP_GC              Gamma correction block
+ * @DPU_DSPP_IGC             Inverse gamma correction block
+ * @DPU_DSPP_GAMUT           3D LUT (gamut) block
+ * @DPU_DSPP_SB              Single-buffer LUTDMA trigger
  */
 enum {
 	DPU_DSPP_PCC = 0x1,
 	DPU_DSPP_GC,
+	DPU_DSPP_IGC,
+	DPU_DSPP_GAMUT,
+	DPU_DSPP_SB,
 	DPU_DSPP_MAX
 };
 
@@ -333,10 +339,32 @@ struct dpu_lm_sub_blks {
  * struct dpu_dspp_sub_blks: Information of DSPP block
  * @pcc: pixel color correction block
  * @gc: gamma correction block
+ * @igc: 1D LUT igc block (LUTDMA only, no MMIO data port; .version 0 = absent)
+ * @gamut3d: 3D LUT gamut block (LUTDMA only, no MMIO data port; .version 0 = absent)
  */
 struct dpu_dspp_sub_blks {
 	struct dpu_pp_blk pcc;
 	struct dpu_pp_blk gc;
+	struct dpu_pp_blk igc;
+	struct dpu_pp_blk gamut3d;
+};
+
+/**
+ * struct dpu_reg_dma_cfg: LUTDMA (reg-DMA) engine instance info.
+ * Queues register-write descriptor buffers (GEM-backed) through a per-CTL
+ * trigger, used to load DSPP IGC/GAMUT LUT data that has no MMIO data port.
+ * @name:          string name for debug purposes
+ * @base:          offset of the DB (double-buffer) queue block inside the
+ *                 separate "regdma" register region (not the "mdp" region)
+ * @sb_base:       offset of the SB (single-buffer) queue block in the same
+ *                 region, 0 if there is none
+ * @version:       HW algorithm version, e.g. 0x00020000
+ */
+struct dpu_reg_dma_cfg {
+	char name[DPU_HW_BLK_NAME_LEN];
+	u32 base;
+	u32 sb_base;
+	u32 version;
 };
 
 struct dpu_pingpong_sub_blks {
@@ -722,6 +750,9 @@ struct dpu_mdss_cfg {
 	const struct dpu_caps *caps;
 
 	const struct dpu_mdp_cfg *mdp;
+
+	/* LUTDMA engine for DSPP IGC/GAMUT LUT loads; NULL where absent */
+	const struct dpu_reg_dma_cfg *reg_dma;
 
 	u32 ctl_count;
 	const struct dpu_ctl_cfg *ctl;

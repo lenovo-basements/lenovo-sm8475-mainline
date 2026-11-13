@@ -1782,6 +1782,8 @@ static void dpu_encoder_helper_hw_reset(struct dpu_encoder_phys *phys_enc)
  */
 static void _dpu_encoder_kickoff_phys(struct dpu_encoder_virt *dpu_enc)
 {
+	struct msm_drm_private *priv = dpu_enc->base.dev->dev_private;
+	struct dpu_hw_reg_dma *reg_dma = to_dpu_kms(priv->kms)->reg_dma;
 	struct dpu_hw_ctl *ctl;
 	uint32_t i, pending_flush;
 	unsigned long lock_flags;
@@ -1809,14 +1811,17 @@ static void _dpu_encoder_kickoff_phys(struct dpu_encoder_virt *dpu_enc)
 			set_bit(i, dpu_enc->frame_busy_mask);
 
 		if (!phys->ops.needs_single_flush ||
-				!phys->ops.needs_single_flush(phys))
+				!phys->ops.needs_single_flush(phys)) {
+			/* LUTDMA packets (DSPP LUTs) land before the CTL flush */
+			dpu_reg_dma_flush(reg_dma, ctl, false);
 			_dpu_encoder_trigger_flush(&dpu_enc->base, phys, 0x0);
-		else if (ctl->ops.get_pending_flush)
+		} else if (ctl->ops.get_pending_flush)
 			pending_flush |= ctl->ops.get_pending_flush(ctl);
 	}
 
 	/* for split flush, combine pending flush masks and send to master */
 	if (pending_flush && dpu_enc->cur_master) {
+		dpu_reg_dma_flush(reg_dma, dpu_enc->cur_master->hw_ctl, false);
 		_dpu_encoder_trigger_flush(
 				&dpu_enc->base,
 				dpu_enc->cur_master,

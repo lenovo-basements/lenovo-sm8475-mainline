@@ -210,6 +210,9 @@ struct dpu_crtc_state {
 
 	bool bw_control;
 	bool bw_split_vote;
+
+	/* connector asked for PQ/BT.2020: DSPP IGC + 3D LUT tone map to the panel */
+	bool hdr_tonemap;
 	struct drm_rect lm_bounds[CRTC_DUAL_MIXERS];
 
 	uint64_t input_fence_timeout_ns;
