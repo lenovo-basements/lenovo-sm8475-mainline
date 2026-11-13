@@ -219,10 +219,34 @@ struct aw86927_data {
 	bool ram_loaded;
 };
 
+/*
+ * Status, trigger and FIFO/RAM data ports; everything else is configuration
+ * only the driver writes, so it can be cached.
+ */
+static bool aw86927_volatile_reg(struct device *dev, unsigned int reg)
+{
+	switch (reg) {
+	case AW86927_RSTCFG_REG:	/* soft reset trigger */
+	case AW86927_SYSINT_REG:	/* interrupt status, read to clear */
+	case AW86927_PLAYCFG4_REG:	/* GO/STOP, self-clearing */
+	case AW86927_RTPDATA_REG:	/* RTP FIFO */
+	case AW86927_GLBRD5_REG:	/* playback state */
+	case AW86927_RAMADDRH_REG:	/* auto-incrementing RAM port */
+	case AW86927_RAMADDRL_REG:
+	case AW86927_RAMDATA_REG:
+	case AW86927_DETCFG1_REG:	/* DET_GO, self-clearing */
+	case AW86927_TMCFG_REG:		/* test mode key */
+		return true;
+	default:
+		return false;
+	}
+}
+
 static const struct regmap_config aw86927_regmap_config = {
 	.reg_bits = 8,
 	.val_bits = 8,
-	.cache_type = REGCACHE_NONE,
+	.cache_type = REGCACHE_MAPLE,
+	.volatile_reg = aw86927_volatile_reg,
 	.max_register = 0x80,
 };
 
@@ -266,7 +290,7 @@ static int aw86927_wait_enter_standby(struct aw86927_data *haptics)
 	err = regmap_read_poll_timeout(haptics->regmap, AW86927_GLBRD5_REG, reg_val,
 				       (FIELD_GET(AW86927_GLBRD5_STATE_MASK, reg_val) ==
 						AW86927_GLBRD5_STATE_STANDBY),
-				       2500, 2500 * 100);
+				       250, 250 * 1000);
 
 	if (err) {
 		dev_err(haptics->dev, "did not enter standby: %d\n", err);
