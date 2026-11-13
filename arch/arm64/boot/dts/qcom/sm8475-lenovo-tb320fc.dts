@@ -1305,9 +1305,12 @@
 		dovdd-supply = <&camera_ldo_dovdd>;
 		avdd-supply = <&cam_avdd_sc202cs>;
 
+		orientation = <1>;
+		rotation = <270>;
+
 		port {
 			sc202cs_out: endpoint {
-				link-frequencies = /bits/ 64 <336000000 207000000>;
+				link-frequencies = /bits/ 64 <360000000>;
 				data-lanes = <1>;
 				remote-endpoint = <&camss_csiphy1_ep>;
 			};
