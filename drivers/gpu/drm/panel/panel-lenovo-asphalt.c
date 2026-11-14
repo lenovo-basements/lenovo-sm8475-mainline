@@ -521,7 +521,7 @@ static void asphalt_shutdown(struct mipi_dsi_device *dsi)
 }
 
 static const struct of_device_id asphalt_of_match[] = {
-	{ .compatible = "lenovo,tb320fc-nt36523n" },
+	{ .compatible = "lenovo,asphalt-nt36523n" },
 	{ }
 };
 MODULE_DEVICE_TABLE(of, asphalt_of_match);

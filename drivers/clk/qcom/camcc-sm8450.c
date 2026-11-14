@@ -3057,7 +3057,7 @@ static const struct of_device_id cam_cc_sm8450_match_table[] = {
 MODULE_DEVICE_TABLE(of, cam_cc_sm8450_match_table);
 
 /*
- * SM8475 (Lenovo TB320FC) camera power handling: the core AHB clock stays on,
+ * SM8475 (Lenovo Legion Y700 Gen 2, asphalt) camera power handling: the core AHB clock stays on,
  * the GDSCs retain state instead of collapsing, TITAN_TOP is kept on at
  * runtime, and the clock controller itself stays runtime-active.
  */
