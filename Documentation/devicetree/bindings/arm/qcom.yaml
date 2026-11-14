@@ -1170,7 +1170,8 @@ properties:
 
       - items:
           - enum:
-              - lenovo,tb320fc
+              - lenovo,asphalt-row
+          - const: lenovo,asphalt
           - const: qcom,sm8475
           - const: qcom,sm8450
 

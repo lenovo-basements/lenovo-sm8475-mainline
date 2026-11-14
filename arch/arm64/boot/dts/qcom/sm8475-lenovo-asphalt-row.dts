@@ -17,7 +17,7 @@
 
 / {
 	model = "Lenovo Legion Y700 Gen 2 (2023)";
-	compatible = "lenovo,tb320fc", "qcom,sm8475", "qcom,sm8450";
+	compatible = "lenovo,asphalt-row", "lenovo,asphalt", "qcom,sm8475", "qcom,sm8450";
 	chassis-type = "tablet";
 
 	/delete-node/ memory@a0000000;
@@ -359,7 +359,7 @@
 	status = "okay";
 
 	panel_backlight: backlight@11 {
-		compatible = "lenovo,tb320fc-ktz8866", "kinetic,ktz8866";
+		compatible = "lenovo,asphalt-ktz8866", "kinetic,ktz8866";
 		reg = <0x11>;
 		vddpos-supply = <&panel_vddpos>;
 		vddneg-supply = <&panel_vddneg>;
@@ -403,7 +403,7 @@
 	status = "okay";
 
 	display_panel: panel@0 {
-		compatible = "lenovo,tb320fc-nt36523n", "novatek,nt36523n";
+		compatible = "lenovo,asphalt-nt36523n", "novatek,nt36523n";
 		reg = <0>;
 		vddio-supply = <&vreg_l12c_1p95>;
 		vddpos-supply = <&panel_vddpos>;
@@ -599,7 +599,7 @@
 
 / {
 	pmic-glink {
-		compatible = "lenovo,tb320fc-pmic-glink", "qcom,sm8450-pmic-glink",
+		compatible = "lenovo,asphalt-pmic-glink", "qcom,sm8450-pmic-glink",
 			     "qcom,pmic-glink";
 		#address-cells = <1>;
 		#size-cells = <0>;
@@ -716,19 +716,19 @@
 };
 
 &remoteproc_adsp {
-	firmware-name = "qcom/lenovo/tb320fc/adsp/adsp.mdt";
+	firmware-name = "qcom/lenovo/asphalt/adsp/adsp.mdt";
 	status = "okay";
 };
 
 &remoteproc_cdsp {
-	firmware-name = "qcom/lenovo/tb320fc/cdsp/cdsp.mdt";
+	firmware-name = "qcom/lenovo/asphalt/cdsp/cdsp.mdt";
 	interconnects = <&nsp_noc MASTER_CDSP_PROC QCOM_ICC_TAG_ALWAYS
 			 &mc_virt SLAVE_EBI1 QCOM_ICC_TAG_ALWAYS>;
 	status = "okay";
 };
 
 &remoteproc_slpi {
-	firmware-name = "qcom/lenovo/tb320fc/slpi/slpi.mdt";
+	firmware-name = "qcom/lenovo/asphalt/slpi/slpi.mdt";
 	status = "okay";
 };
 
@@ -828,7 +828,7 @@
 	status = "okay";
 };
 &gmu { status = "okay"; };
-&gpu_zap_shader { firmware-name = "qcom/lenovo/tb320fc/a730_zap.mdt"; };
+&gpu_zap_shader { firmware-name = "qcom/lenovo/asphalt/a730_zap.mdt"; };
 &gpu_opp_table {
 	compatible = "operating-points-v2-adreno", "operating-points-v2";
 	/delete-node/ opp-818000000;
@@ -1111,7 +1111,7 @@
 
 &sound {
 	compatible = "qcom,sm8450-sndcard";
-	model = "Lenovo-TB320FC";
+	model = "Lenovo-Asphalt";
 	pinctrl-0 = <&pri_mi2s_active>;
 	pinctrl-names = "default";
 

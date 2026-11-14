@@ -28,7 +28,7 @@ properties:
           - const: novatek,nt36523w
       - items:
           - enum:
-              - lenovo,tb320fc-nt36523n
+              - lenovo,asphalt-nt36523n
           - const: novatek,nt36523n
 
   reg:

@@ -2,7 +2,7 @@
 /*
  * Will Semiconductor WL2864C camera PMIC: seven I2C controlled LDOs.
  *
- * Register layout as used by the Lenovo TB320FC camera stack
+ * Register layout as used by the Lenovo Legion Y700 Gen 2 (asphalt) camera stack
  * (cam_power_dev.c):
  *   0x01        control, 0x2f selects the higher current limit
  *   0x03..0x09  LDO1..LDO7 output voltage

@@ -158,13 +158,13 @@ static u32 get_vertical_total(const struct dpu_hw_intf_timing_params *timing)
 	return active + inactive;
 }
 
-static bool dpu_encoder_phys_vid_tb320fc_split(struct dpu_encoder_phys *phys_enc)
+static bool dpu_encoder_phys_vid_asphalt_split(struct dpu_encoder_phys *phys_enc)
 {
 	const struct drm_dsc_config *dsc;
 
 	if (!phys_enc || !phys_enc->parent || !phys_enc->hw_intf ||
 	    !phys_enc->hw_intf->cap || !phys_enc->hw_pp ||
-	    !of_machine_is_compatible("lenovo,tb320fc") ||
+	    !of_machine_is_compatible("lenovo,asphalt") ||
 	    phys_enc->intf_mode != INTF_MODE_VIDEO ||
 	    phys_enc->hw_intf->cap->type != INTF_DSI ||
 	    phys_enc->cached_mode.hdisplay != 1600 ||
@@ -186,10 +186,10 @@ static bool dpu_encoder_phys_vid_tb320fc_split(struct dpu_encoder_phys *phys_enc
 		phys_enc->hw_pp->idx == PINGPONG_1);
 }
 
-static bool dpu_encoder_phys_vid_tb320fc_prefetch(struct dpu_encoder_phys *phys_enc,
+static bool dpu_encoder_phys_vid_asphalt_prefetch(struct dpu_encoder_phys *phys_enc,
 						  const struct dpu_hw_intf_timing_params *timing)
 {
-	return dpu_encoder_phys_vid_tb320fc_split(phys_enc) &&
+	return dpu_encoder_phys_vid_asphalt_split(phys_enc) &&
 	       timing->v_back_porch + timing->vsync_pulse_width >=
 	       phys_enc->hw_intf->cap->prog_fetch_lines_worst_case;
 }
@@ -223,7 +223,7 @@ static u32 programmable_fetch_get_num_lines(
 	if (start_of_frame_lines >= worst_case_needed_lines) {
 		DPU_DEBUG_VIDENC(phys_enc,
 				"prog fetch is not needed, large vbp+vsw\n");
-		if (dpu_encoder_phys_vid_tb320fc_prefetch(phys_enc, timing))
+		if (dpu_encoder_phys_vid_asphalt_prefetch(phys_enc, timing))
 			actual_vfp_lines = min_t(u32, 2, timing->v_front_porch);
 		else
 			actual_vfp_lines = 0;
@@ -280,7 +280,7 @@ static void programmable_fetch_config(struct dpu_encoder_phys *phys_enc,
 		vfp_fetch_start_vsync_counter =
 		    (vert_total - vfp_fetch_lines) * horiz_total + 1;
 		if (vfp_fetch_lines > 1 &&
-		    dpu_encoder_phys_vid_tb320fc_prefetch(phys_enc, timing))
+		    dpu_encoder_phys_vid_asphalt_prefetch(phys_enc, timing))
 			vfp_fetch_start_vsync_counter += horiz_total;
 		f.enable = 1;
 		f.fetch_start = vfp_fetch_start_vsync_counter;
@@ -749,7 +749,7 @@ static void dpu_encoder_phys_vid_handle_post_kickoff(
 	 * Video encoders need to turn on their interfaces now
 	 */
 	if (phys_enc->enable_state == DPU_ENC_ENABLING) {
-		split_timing = dpu_encoder_phys_vid_tb320fc_split(phys_enc);
+		split_timing = dpu_encoder_phys_vid_asphalt_split(phys_enc);
 		write_timing = !split_timing || dpu_encoder_phys_vid_is_master(phys_enc);
 		trace_dpu_enc_phys_vid_post_kickoff(DRMID(phys_enc->parent),
 				    phys_enc->hw_intf->idx - INTF_0);
