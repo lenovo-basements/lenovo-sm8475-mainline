@@ -45,10 +45,14 @@
 #define NVT_COORD_SCALE		10
 #define NVT_MAX_PARTITIONS	64
 #define NVT_FW_SECTOR_SIZE	4096
+#define NVT_PEN_FORMAT		1
+#define NVT_PEN_NONE		0xff
+#define NVT_STYLUS_EVENT	30	/* frame[0] >> 3 */
+#define NVT_STYLUS_FUNCPAGE	5
 
 static bool pen_enabled;
-module_param(pen_enabled, bool, 0644);
-MODULE_PARM_DESC(pen_enabled, "Enable firmware pen mode instead of stock initial touch mode");
+module_param(pen_enabled, bool, 0444);
+MODULE_PARM_DESC(pen_enabled, "Initial firmware pen mode (runtime: pen_mode in sysfs)");
 
 struct nvt_partition {
 	u32 offset;
@@ -62,6 +66,7 @@ struct nvt_ts {
 	struct input_dev *input;
 	struct input_dev *pen;
 	struct touchscreen_properties prop;
+	struct touchscreen_properties pen_prop;
 	struct drm_panel_follower follower;
 	const struct firmware *firmware;
 	struct nvt_partition *partitions;
@@ -80,6 +85,9 @@ struct nvt_ts {
 	bool stopping;
 	bool cascade;
 	bool dma_setup;
+	bool pen_mode;
+	u8 rotation;
+	int pen_battery;
 	u8 recovery_frames;
 	u8 recovery_attempts;
 	u8 io_failures;
@@ -303,14 +311,14 @@ static int nvt_identify(struct nvt_ts *ts)
 	return 0;
 }
 
-static int nvt_configure_pen(struct nvt_ts *ts)
+/* The firmware clears the host command byte once it has taken the command. */
+static int nvt_host_command(struct nvt_ts *ts, const u8 *command, size_t len)
 {
-	u8 command[] = { 0x7b, pen_enabled };
 	u8 status;
 	int i, error;
 
 	for (i = 0; i < 5; i++) {
-		error = nvt_write(ts, NVT_HOST_CMD, command, sizeof(command));
+		error = nvt_write(ts, NVT_HOST_CMD, command, len);
 		if (error)
 			return error;
 		msleep(20);
@@ -319,6 +327,25 @@ static int nvt_configure_pen(struct nvt_ts *ts)
 			return error;
 	}
 	return -ETIMEDOUT;
+}
+
+static int nvt_configure_pen(struct nvt_ts *ts)
+{
+	u8 command[] = { 0x7b, ts->pen_mode };
+
+	return nvt_host_command(ts, command, sizeof(command));
+}
+
+/*
+ * The edge and palm rejection zones follow the display orientation, one host
+ * command per quarter turn (the vendor kernel's "edge reject"). The firmware
+ * starts out in the 0 degree layout after every download.
+ */
+static int nvt_configure_rotation(struct nvt_ts *ts)
+{
+	static const u8 commands[] = { 0xba, 0xbc, 0xbd, 0xbb };
+
+	return nvt_host_command(ts, &commands[ts->rotation], 1);
 }
 
 static int nvt_download_firmware(struct nvt_ts *ts)
@@ -425,6 +452,11 @@ static int nvt_download_firmware(struct nvt_ts *ts)
 	if (info[0] + info[1] != 0xff)
 		return -EBADMSG;
 
+	/* Only the rejection zones depend on it: touch still works without. */
+	error = nvt_configure_rotation(ts);
+	if (error)
+		dev_warn(&ts->spi->dev, "Rotation command failed: %d\n", error);
+
 	return ts->pen ? nvt_configure_pen(ts) : 0;
 }
 
@@ -472,23 +504,24 @@ static void nvt_report_pen(struct nvt_ts *ts, const u8 *frame)
 
 	if (!ts->pen)
 		return;
-	if (frame[65] == 0xff) {
+	if (frame[65] == NVT_PEN_NONE) {
 		nvt_release_pen(ts);
 		return;
 	}
-	if (frame[65] != 1)
-		return; /* pen's serial number. */
+	if (frame[65] != NVT_PEN_FORMAT)
+		return; /* 0xf0: the pen's ID instead of a position */
 
+	/* Keep the pen's 1/10 pixel resolution, unlike the finger contacts. */
 	x = get_unaligned_be16(frame + 66);
 	y = get_unaligned_be16(frame + 68);
-	if (x > (ts->prop.max_x + 1) * NVT_COORD_SCALE ||
-	    y > (ts->prop.max_y + 1) * NVT_COORD_SCALE)
+	if (x > ts->pen_prop.max_x + 1 || y > ts->pen_prop.max_y + 1)
 		return;
-	x = min(x / NVT_COORD_SCALE, ts->prop.max_x);
-	y = min(y / NVT_COORD_SCALE, ts->prop.max_y);
+	x = min(x, ts->pen_prop.max_x);
+	y = min(y, ts->pen_prop.max_y);
 	pressure = min_t(unsigned int, get_unaligned_be16(frame + 70), 4095);
 	distance = get_unaligned_be16(frame + 74);
-	touchscreen_report_pos(ts->pen, &ts->prop, x, y, false);
+	WRITE_ONCE(ts->pen_battery, frame[77]);
+	touchscreen_report_pos(ts->pen, &ts->pen_prop, x, y, false);
 	input_report_abs(ts->pen, ABS_PRESSURE, pressure);
 	input_report_abs(ts->pen, ABS_TILT_X, clamp_t(s8, frame[72], -60, 60));
 	input_report_abs(ts->pen, ABS_TILT_Y, clamp_t(s8, frame[73], -60, 60));
@@ -637,8 +670,14 @@ static irqreturn_t nvt_irq(int irq, void *context)
 		goto out;
 	}
 	ts->recovery_frames = 0;
-	if (handshake || ((frame[0] >> 3) == 30 && frame[1] == 5))
+	if (handshake)
 		goto out;
+	if ((frame[0] >> 3) == NVT_STYLUS_EVENT && frame[1] == NVT_STYLUS_FUNCPAGE) {
+		/* 0: left pen mode, 1: pen detected, 2: entered pen mode */
+		dev_dbg(&ts->spi->dev, "Stylus state %u (pen mode %d)\n",
+			frame[2], ts->pen_mode);
+		goto out;
+	}
 
 	error = nvt_report_contacts(ts, frame);
 	if (!error) {
@@ -842,6 +881,31 @@ static void nvt_release_firmware(void *context)
 	release_firmware(context);
 }
 
+/*
+ * Units per mm from touchscreen-{x,y}-mm. libinput only treats the pen as a
+ * tablet tool (pressure, tilt, hover) when its axes have a resolution.
+ */
+static void nvt_set_resolution(struct nvt_ts *ts, struct input_dev *input,
+			       unsigned int abs_x, unsigned int abs_y,
+			       unsigned int scale)
+{
+	struct device *dev = &ts->spi->dev;
+	u32 x_mm, y_mm;
+
+	if (device_property_read_u32(dev, "touchscreen-x-mm", &x_mm) ||
+	    device_property_read_u32(dev, "touchscreen-y-mm", &y_mm) ||
+	    !x_mm || !y_mm)
+		return;
+	if (ts->prop.swap_x_y)
+		swap(x_mm, y_mm);
+	input_abs_set_res(input, abs_x,
+			  DIV_ROUND_CLOSEST((input_abs_get_max(ts->input, ABS_MT_POSITION_X) + 1) *
+					    scale, x_mm));
+	input_abs_set_res(input, abs_y,
+			  DIV_ROUND_CLOSEST((input_abs_get_max(ts->input, ABS_MT_POSITION_Y) + 1) *
+					    scale, y_mm));
+}
+
 static int nvt_setup_input(struct nvt_ts *ts)
 {
 	struct device *dev = &ts->spi->dev;
@@ -862,6 +926,7 @@ static int nvt_setup_input(struct nvt_ts *ts)
 	if (ts->prop.max_x >= 65535 / NVT_COORD_SCALE ||
 	    ts->prop.max_y >= 65535 / NVT_COORD_SCALE)
 		return -EINVAL;
+	nvt_set_resolution(ts, input, ABS_MT_POSITION_X, ABS_MT_POSITION_Y, 1);
 	error = input_mt_init_slots(input, NVT_MAX_CONTACTS,
 				    INPUT_MT_DIRECT | INPUT_MT_DROP_UNUSED);
 	if (error)
@@ -883,16 +948,151 @@ static int nvt_setup_input(struct nvt_ts *ts)
 	input_set_capability(input, EV_KEY, BTN_TOOL_PEN);
 	input_set_capability(input, EV_KEY, BTN_STYLUS);
 	input_set_capability(input, EV_KEY, BTN_STYLUS2);
+	ts->pen_prop = ts->prop;
+	ts->pen_prop.max_x = (ts->prop.max_x + 1) * NVT_COORD_SCALE - 1;
+	ts->pen_prop.max_y = (ts->prop.max_y + 1) * NVT_COORD_SCALE - 1;
 	input_set_abs_params(input, ABS_X, 0,
-			     input_abs_get_max(ts->input, ABS_MT_POSITION_X), 0, 0);
+			     (input_abs_get_max(ts->input, ABS_MT_POSITION_X) + 1) *
+			     NVT_COORD_SCALE - 1, 0, 0);
 	input_set_abs_params(input, ABS_Y, 0,
-			     input_abs_get_max(ts->input, ABS_MT_POSITION_Y), 0, 0);
+			     (input_abs_get_max(ts->input, ABS_MT_POSITION_Y) + 1) *
+			     NVT_COORD_SCALE - 1, 0, 0);
+	nvt_set_resolution(ts, input, ABS_X, ABS_Y, NVT_COORD_SCALE);
 	input_set_abs_params(input, ABS_PRESSURE, 0, 4095, 0, 0);
 	input_set_abs_params(input, ABS_DISTANCE, 0, 1, 0, 0);
 	input_set_abs_params(input, ABS_TILT_X, -60, 60, 0, 0);
 	input_set_abs_params(input, ABS_TILT_Y, -60, 60, 0, 0);
 	return input_register_device(input);
 }
+
+static ssize_t pen_mode_show(struct device *dev, struct device_attribute *attr,
+			     char *buf)
+{
+	struct nvt_ts *ts = dev_get_drvdata(dev);
+
+	return sysfs_emit(buf, "%d\n", READ_ONCE(ts->pen_mode));
+}
+
+/*
+ * The firmware scans for the active pen only in pen mode. Stock Android turns
+ * it on while its Bluetooth pen is connected; it is kept across firmware
+ * reloads (panel power cycles, watchdog recovery).
+ */
+static ssize_t pen_mode_store(struct device *dev, struct device_attribute *attr,
+			      const char *buf, size_t count)
+{
+	struct nvt_ts *ts = dev_get_drvdata(dev);
+	bool mode;
+	int error;
+
+	error = kstrtobool(buf, &mode);
+	if (error)
+		return error;
+
+	mutex_lock(&ts->io_lock);
+	if (mode == ts->pen_mode) {
+		mutex_unlock(&ts->io_lock);
+		return count;
+	}
+	ts->pen_mode = mode;
+	if (ts->running) {
+		error = nvt_configure_pen(ts);
+		if (error)
+			ts->pen_mode = !mode;
+		else if (!mode)
+			nvt_release_pen(ts);
+	}
+	mutex_unlock(&ts->io_lock);
+
+	return error ?: count;
+}
+static DEVICE_ATTR_RW(pen_mode);
+
+/* Battery level byte of the pen's last report, -1 before any report. */
+static ssize_t pen_battery_show(struct device *dev,
+				struct device_attribute *attr, char *buf)
+{
+	struct nvt_ts *ts = dev_get_drvdata(dev);
+
+	return sysfs_emit(buf, "%d\n", READ_ONCE(ts->pen_battery));
+}
+static DEVICE_ATTR_RO(pen_battery);
+
+static struct attribute *nvt_pen_attrs[] = {
+	&dev_attr_pen_mode.attr,
+	&dev_attr_pen_battery.attr,
+	NULL
+};
+
+static umode_t nvt_pen_attr_visible(struct kobject *kobj,
+				    struct attribute *attr, int n)
+{
+	struct nvt_ts *ts = dev_get_drvdata(kobj_to_dev(kobj));
+
+	return ts && ts->pen ? attr->mode : 0;
+}
+
+static const struct attribute_group nvt_pen_group = {
+	.attrs = nvt_pen_attrs,
+	.is_visible = nvt_pen_attr_visible,
+};
+
+static ssize_t rotation_show(struct device *dev, struct device_attribute *attr,
+			     char *buf)
+{
+	struct nvt_ts *ts = dev_get_drvdata(dev);
+
+	return sysfs_emit(buf, "%u\n", READ_ONCE(ts->rotation) * 90);
+}
+
+/*
+ * How far the device is turned from its natural (portrait) orientation, in
+ * degrees counter-clockwise: 0, 90, 180 or 270, Android's Display rotation
+ * numbering. The firmware then rejects edge and palm contacts along the edges
+ * the user holds. Kept across firmware reloads.
+ */
+static ssize_t rotation_store(struct device *dev, struct device_attribute *attr,
+			      const char *buf, size_t count)
+{
+	struct nvt_ts *ts = dev_get_drvdata(dev);
+	unsigned int degrees;
+	u8 old;
+	int error;
+
+	error = kstrtouint(buf, 10, &degrees);
+	if (error)
+		return error;
+	if (degrees % 90 || degrees > 270)
+		return -EINVAL;
+
+	mutex_lock(&ts->io_lock);
+	old = ts->rotation;
+	WRITE_ONCE(ts->rotation, degrees / 90);
+	if (ts->running && ts->rotation != old) {
+		error = nvt_configure_rotation(ts);
+		if (error)
+			WRITE_ONCE(ts->rotation, old);
+	}
+	mutex_unlock(&ts->io_lock);
+
+	return error ?: count;
+}
+static DEVICE_ATTR_RW(rotation);
+
+static struct attribute *nvt_attrs[] = {
+	&dev_attr_rotation.attr,
+	NULL
+};
+
+static const struct attribute_group nvt_group = {
+	.attrs = nvt_attrs,
+};
+
+static const struct attribute_group *nvt_groups[] = {
+	&nvt_group,
+	&nvt_pen_group,
+	NULL
+};
 
 static int nvt_probe(struct spi_device *spi)
 {
@@ -912,6 +1112,8 @@ static int nvt_probe(struct spi_device *spi)
 	if (!ts)
 		return -ENOMEM;
 	ts->spi = spi;
+	ts->pen_mode = pen_enabled;
+	ts->pen_battery = -1;
 	mutex_init(&ts->state_lock);
 	mutex_init(&ts->io_lock);
 	INIT_DELAYED_WORK(&ts->release_work, nvt_release_invalid_report);
@@ -972,6 +1174,7 @@ static struct spi_driver nvt_driver = {
 		.name = "novatek-nt36523n",
 		.of_match_table = nvt_of_match,
 		.pm = pm_sleep_ptr(&nvt_pm_ops),
+		.dev_groups = nvt_groups,
 	},
 	.probe = nvt_probe,
 	.shutdown = nvt_shutdown,
