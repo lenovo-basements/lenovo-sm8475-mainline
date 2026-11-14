@@ -488,6 +488,8 @@
 		firmware-name = "novatek/novatek_ts_fw.bin";
 		touchscreen-size-x = <1600>;
 		touchscreen-size-y = <2560>;
+		touchscreen-x-mm = <118>;
+		touchscreen-y-mm = <190>;
 		novatek,pen-support;
 	};
 };
