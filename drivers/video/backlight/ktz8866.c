@@ -50,11 +50,11 @@ struct ktz8866 {
 	struct regmap *regmap;
 	bool led_on;
 	struct gpio_desc *enable_gpio;
-	bool tb320fc;
+	bool asphalt;
 };
 
 /* register dimming, 10 uH boost and 22 mA sinks. taken from lenovo changes */
-static const struct reg_sequence tb320fc_config[] = {
+static const struct reg_sequence asphalt_config[] = {
 	{ BL_CFG1, 0x5a },
 	{ BL_OPTION2, 0xb7 },
 	{ PWM_RAMP_TIME, 0xa8 },
@@ -130,9 +130,9 @@ static int ktz8866_init(struct ktz8866 *ktz)
 	unsigned int val = 0;
 	int ret;
 
-	if (ktz->tb320fc) {
-		ret = regmap_multi_reg_write(ktz->regmap, tb320fc_config,
-					     ARRAY_SIZE(tb320fc_config));
+	if (ktz->asphalt) {
+		ret = regmap_multi_reg_write(ktz->regmap, asphalt_config,
+					     ARRAY_SIZE(asphalt_config));
 		if (ret)
 			return ret;
 	}
@@ -194,7 +194,7 @@ static int ktz8866_probe(struct i2c_client *client)
 		return -ENOMEM;
 
 	ktz->client = client;
-	ktz->tb320fc = of_device_is_compatible(client->dev.of_node, "lenovo,tb320fc-ktz8866");
+	ktz->asphalt = of_device_is_compatible(client->dev.of_node, "lenovo,asphalt-ktz8866");
 	ktz->regmap = devm_regmap_init_i2c(client, &ktz8866_regmap_config);
 	if (IS_ERR(ktz->regmap))
 		return dev_err_probe(&client->dev, PTR_ERR(ktz->regmap), "failed to init regmap\n");
@@ -209,7 +209,7 @@ static int ktz8866_probe(struct i2c_client *client)
 	ktz->enable_gpio = devm_gpiod_get_optional(&client->dev, "enable", GPIOD_OUT_HIGH);
 	if (IS_ERR(ktz->enable_gpio))
 		return PTR_ERR(ktz->enable_gpio);
-	if (ktz->tb320fc)
+	if (ktz->asphalt)
 		usleep_range(3500, 4000);
 
 	memset(&props, 0, sizeof(props));
@@ -252,7 +252,7 @@ MODULE_DEVICE_TABLE(i2c, ktz8866_ids);
 
 static const struct of_device_id ktz8866_match_table[] = {
 	{
-		.compatible = "lenovo,tb320fc-ktz8866",
+		.compatible = "lenovo,asphalt-ktz8866",
 	},
 	{
 		.compatible = "kinetic,ktz8866",

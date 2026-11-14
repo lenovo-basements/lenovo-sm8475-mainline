@@ -25,7 +25,7 @@ properties:
           - enum:
               # Lenovo Legion Y700 Gen 2: boost inductor, sink current and LCD
               # bias outputs differ from the chip defaults
-              - lenovo,tb320fc-ktz8866
+              - lenovo,asphalt-ktz8866
           - const: kinetic,ktz8866
 
   reg:
