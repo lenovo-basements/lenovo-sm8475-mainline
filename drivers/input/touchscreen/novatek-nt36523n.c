@@ -86,6 +86,7 @@ struct nvt_ts {
 	bool cascade;
 	bool dma_setup;
 	bool pen_mode;
+	u8 rotation;
 	int pen_battery;
 	u8 recovery_frames;
 	u8 recovery_attempts;
@@ -310,14 +311,14 @@ static int nvt_identify(struct nvt_ts *ts)
 	return 0;
 }
 
-static int nvt_configure_pen(struct nvt_ts *ts)
+/* The firmware clears the host command byte once it has taken the command. */
+static int nvt_host_command(struct nvt_ts *ts, const u8 *command, size_t len)
 {
-	u8 command[] = { 0x7b, ts->pen_mode };
 	u8 status;
 	int i, error;
 
 	for (i = 0; i < 5; i++) {
-		error = nvt_write(ts, NVT_HOST_CMD, command, sizeof(command));
+		error = nvt_write(ts, NVT_HOST_CMD, command, len);
 		if (error)
 			return error;
 		msleep(20);
@@ -326,6 +327,25 @@ static int nvt_configure_pen(struct nvt_ts *ts)
 			return error;
 	}
 	return -ETIMEDOUT;
+}
+
+static int nvt_configure_pen(struct nvt_ts *ts)
+{
+	u8 command[] = { 0x7b, ts->pen_mode };
+
+	return nvt_host_command(ts, command, sizeof(command));
+}
+
+/*
+ * The edge and palm rejection zones follow the display orientation, one host
+ * command per quarter turn (the vendor kernel's "edge reject"). The firmware
+ * starts out in the 0 degree layout after every download.
+ */
+static int nvt_configure_rotation(struct nvt_ts *ts)
+{
+	static const u8 commands[] = { 0xba, 0xbc, 0xbd, 0xbb };
+
+	return nvt_host_command(ts, &commands[ts->rotation], 1);
 }
 
 static int nvt_download_firmware(struct nvt_ts *ts)
@@ -431,6 +451,11 @@ static int nvt_download_firmware(struct nvt_ts *ts)
 		return error;
 	if (info[0] + info[1] != 0xff)
 		return -EBADMSG;
+
+	/* Only the rejection zones depend on it: touch still works without. */
+	error = nvt_configure_rotation(ts);
+	if (error)
+		dev_warn(&ts->spi->dev, "Rotation command failed: %d\n", error);
 
 	return ts->pen ? nvt_configure_pen(ts) : 0;
 }
@@ -1011,7 +1036,63 @@ static const struct attribute_group nvt_pen_group = {
 	.attrs = nvt_pen_attrs,
 	.is_visible = nvt_pen_attr_visible,
 };
-__ATTRIBUTE_GROUPS(nvt_pen);
+
+static ssize_t rotation_show(struct device *dev, struct device_attribute *attr,
+			     char *buf)
+{
+	struct nvt_ts *ts = dev_get_drvdata(dev);
+
+	return sysfs_emit(buf, "%u\n", READ_ONCE(ts->rotation) * 90);
+}
+
+/*
+ * How far the device is turned from its natural (portrait) orientation, in
+ * degrees counter-clockwise: 0, 90, 180 or 270, Android's Display rotation
+ * numbering. The firmware then rejects edge and palm contacts along the edges
+ * the user holds. Kept across firmware reloads.
+ */
+static ssize_t rotation_store(struct device *dev, struct device_attribute *attr,
+			      const char *buf, size_t count)
+{
+	struct nvt_ts *ts = dev_get_drvdata(dev);
+	unsigned int degrees;
+	u8 old;
+	int error;
+
+	error = kstrtouint(buf, 10, &degrees);
+	if (error)
+		return error;
+	if (degrees % 90 || degrees > 270)
+		return -EINVAL;
+
+	mutex_lock(&ts->io_lock);
+	old = ts->rotation;
+	WRITE_ONCE(ts->rotation, degrees / 90);
+	if (ts->running && ts->rotation != old) {
+		error = nvt_configure_rotation(ts);
+		if (error)
+			WRITE_ONCE(ts->rotation, old);
+	}
+	mutex_unlock(&ts->io_lock);
+
+	return error ?: count;
+}
+static DEVICE_ATTR_RW(rotation);
+
+static struct attribute *nvt_attrs[] = {
+	&dev_attr_rotation.attr,
+	NULL
+};
+
+static const struct attribute_group nvt_group = {
+	.attrs = nvt_attrs,
+};
+
+static const struct attribute_group *nvt_groups[] = {
+	&nvt_group,
+	&nvt_pen_group,
+	NULL
+};
 
 static int nvt_probe(struct spi_device *spi)
 {
@@ -1093,7 +1174,7 @@ static struct spi_driver nvt_driver = {
 		.name = "novatek-nt36523n",
 		.of_match_table = nvt_of_match,
 		.pm = pm_sleep_ptr(&nvt_pm_ops),
-		.dev_groups = nvt_pen_groups,
+		.dev_groups = nvt_groups,
 	},
 	.probe = nvt_probe,
 	.shutdown = nvt_shutdown,

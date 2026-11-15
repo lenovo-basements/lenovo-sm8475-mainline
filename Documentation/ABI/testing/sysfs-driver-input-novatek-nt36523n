@@ -1,0 +1,26 @@
+What:		/sys/bus/spi/devices/<dev>/rotation
+Date:		November 2026
+Contact:	linux-input@vger.kernel.org
+Description:
+		(RW) How far the device is turned from its natural
+		orientation, in degrees counter-clockwise: 0, 90, 180 or 270.
+		The touch controller firmware places its edge and palm
+		rejection zones along the edges the user holds in that
+		orientation. Defaults to 0 and is re-applied whenever the
+		firmware is reloaded (power cycle, watchdog recovery).
+
+What:		/sys/bus/spi/devices/<dev>/pen_mode
+Date:		November 2026
+Contact:	linux-input@vger.kernel.org
+Description:
+		(RW) 1 to make the controller scan for an active pen, 0 to scan
+		for fingers only. Present only when the device tree enables
+		pen support. Kept across firmware reloads.
+
+What:		/sys/bus/spi/devices/<dev>/pen_battery
+Date:		November 2026
+Contact:	linux-input@vger.kernel.org
+Description:
+		(RO) Battery level byte from the pen's last report, -1 before
+		any pen report. Present only when the device tree enables pen
+		support.
