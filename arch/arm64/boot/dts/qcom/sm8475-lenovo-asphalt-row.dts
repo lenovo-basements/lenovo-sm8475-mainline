@@ -1257,10 +1257,14 @@
 };
 
 &cci0_i2c0 {
-	actuator@c {
-		compatible = "dongwoon,dw9714";
+	main_camera_lens: actuator@c {
+		compatible = "giantec,gt9768";
 		reg = <0x0c>;
-		vcc-supply = <&cam_afvdd_main>;
+		vin-supply = <&camera_ldo_dovdd>;
+		vdd-supply = <&cam_afvdd_main>;
+		dongwoon,aac-mode = <3>;
+		dongwoon,aac-timing = <8>;
+		dongwoon,clock-presc = <0>;
 	};
 
 	eeprom@58 {
@@ -1273,6 +1277,7 @@
 	camera@36 {
 		compatible = "ovti,ov13b10";
 		reg = <0x36>;
+		lens-focus = <&main_camera_lens>;
 		orientation = <1>;
 		rotation = <270>;
 
