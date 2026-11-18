@@ -82,6 +82,7 @@ enum qcom_battmgr_variant {
 #define BATT_CHG_CTRL_END_THR		26
 
 #define LENOVO_BATT_CHG_ENABLE		27
+#define LENOVO_BATT_EXTFGREAD_ENABLE	31
 
 #define BATTMGR_USB_PROPERTY_GET	0x32
 #define BATTMGR_USB_PROPERTY_SET	0x33
@@ -347,6 +348,7 @@ struct qcom_battmgr {
 
 	struct work_struct enable_work;
 	bool restore_notifications;
+	bool restore_extfgread;
 
 	/*
 	 * @lock is used to prevent concurrent power supply requests to the
@@ -1803,10 +1805,9 @@ static void qcom_battmgr_enable_worker(struct work_struct *work)
 static int qcom_battmgr_suspend(struct device *dev)
 {
 	struct qcom_battmgr *battmgr = dev_get_drvdata(dev);
-	int ret;
+	int ret = 0;
 
-	if (pm_suspend_target_state != PM_SUSPEND_MEM ||
-	    battmgr->variant != QCOM_BATTMGR_LENOVO_SM8475)
+	if (battmgr->variant != QCOM_BATTMGR_LENOVO_SM8475)
 		return 0;
 
 	mutex_lock(&battmgr->lock);
@@ -1814,14 +1815,28 @@ static int qcom_battmgr_suspend(struct device *dev)
 		ret = -ENOTCONN;
 		goto unlock;
 	}
-	ret = qcom_battmgr_set_notifications(battmgr, false);
-	if (ret) {
-		dev_warn(dev, "failed to pause notifications for deep suspend: %d\n", ret);
-		if (qcom_battmgr_set_notifications(battmgr, true))
-			dev_warn(dev, "failed to recover notifications after suspend abort\n");
-	} else {
+	if (pm_suspend_target_state == PM_SUSPEND_MEM) {
+		ret = qcom_battmgr_set_notifications(battmgr, false);
+		if (ret) {
+			dev_warn(dev, "failed to pause notifications for deep suspend: %d\n", ret);
+			if (qcom_battmgr_set_notifications(battmgr, true))
+				dev_warn(dev, "failed to recover notifications after suspend abort\n");
+			goto unlock;
+		}
 		battmgr->restore_notifications = true;
 		dev_info(dev, "paused notifications for deep suspend\n");
+	}
+	ret = qcom_battmgr_request_property(battmgr, BATTMGR_BAT_PROPERTY_SET,
+					    LENOVO_BATT_EXTFGREAD_ENABLE, 0);
+	if (ret) {
+		dev_warn(dev, "failed to disable extfgread for suspend: %d\n", ret);
+		if (battmgr->restore_notifications) {
+			battmgr->restore_notifications = false;
+			if (qcom_battmgr_set_notifications(battmgr, true))
+				dev_warn(dev, "failed to recover notifications after suspend abort\n");
+		}
+	} else {
+		battmgr->restore_extfgread = true;
 	}
 unlock:
 	mutex_unlock(&battmgr->lock);
@@ -1833,17 +1848,26 @@ static int qcom_battmgr_resume(struct device *dev)
 	struct qcom_battmgr *battmgr = dev_get_drvdata(dev);
 	int ret;
 
-	if (!battmgr->restore_notifications)
+	if (!battmgr->restore_notifications && !battmgr->restore_extfgread)
 		return 0;
 
 	mutex_lock(&battmgr->lock);
-	battmgr->restore_notifications = false;
-	ret = qcom_battmgr_set_notifications(battmgr, true);
-	if (ret) {
-		dev_warn(dev, "failed to restore notifications after deep suspend: %d\n", ret);
-		schedule_work(&battmgr->enable_work);
-	} else {
-		dev_info(dev, "restored notifications after deep suspend\n");
+	if (battmgr->restore_extfgread) {
+		battmgr->restore_extfgread = false;
+		ret = qcom_battmgr_request_property(battmgr, BATTMGR_BAT_PROPERTY_SET,
+						    LENOVO_BATT_EXTFGREAD_ENABLE, 1);
+		if (ret)
+			dev_warn(dev, "failed to restore extfgread after suspend: %d\n", ret);
+	}
+	if (battmgr->restore_notifications) {
+		battmgr->restore_notifications = false;
+		ret = qcom_battmgr_set_notifications(battmgr, true);
+		if (ret) {
+			dev_warn(dev, "failed to restore notifications after deep suspend: %d\n", ret);
+			schedule_work(&battmgr->enable_work);
+		} else {
+			dev_info(dev, "restored notifications after deep suspend\n");
+		}
 	}
 	mutex_unlock(&battmgr->lock);
 	return 0;
