@@ -312,6 +312,9 @@
 			regulator-max-microvolt = <1980000>;
 			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
 			regulator-boot-on;
+			regulator-state-mem {
+				regulator-on-in-suspend;
+			};
 		};
 		vreg_l6c_2p96: ldo6 {
 			regulator-name = "vreg_l6c_2p96";
@@ -478,6 +481,15 @@
 };
 
 &spi4 {
+	/*
+	 * GENI drops the pins when it runtime-suspends (250 ms idle). In
+	 * gesture mode the bus idles right after the 0x13 command, and a
+	 * floating CS selects the TDDI, which then resets (fd reports).
+	 * Park CS pulled up like the vendor sleep state.
+	 */
+	pinctrl-names = "default", "sleep";
+	pinctrl-0 = <&qup_spi4_data_clk>, <&qup_spi4_cs>;
+	pinctrl-1 = <&touch_spi_sleep>;
 	status = "okay";
 
 	touchscreen@0 {
@@ -494,6 +506,7 @@
 		touchscreen-x-mm = <118>;
 		touchscreen-y-mm = <190>;
 		novatek,pen-support;
+		wakeup-source;
 	};
 };
 
@@ -510,6 +523,22 @@
 		function = "gpio";
 		drive-strength = <8>;
 		bias-pull-up;
+	};
+
+	touch_spi_sleep: touch-spi-sleep-state {
+		data-clk-pins {
+			pins = "gpio16", "gpio17", "gpio18";
+			function = "gpio";
+			drive-strength = <6>;
+			bias-disable;
+		};
+
+		cs-pins {
+			pins = "gpio19";
+			function = "gpio";
+			drive-strength = <6>;
+			bias-pull-up;
+		};
 	};
 
 	camera_rear_mclk: camera-rear-mclk-state {

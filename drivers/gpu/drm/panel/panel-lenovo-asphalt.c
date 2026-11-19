@@ -40,6 +40,8 @@ struct asphalt_panel {
 	struct regulator_bulk_data supplies[ASPHALT_NUM_SUPPLIES];
 	enum drm_panel_orientation orientation;
 	unsigned int current_refresh_rate;
+	bool supplies_kept;
+	bool shutting_down;
 };
 
 static const struct drm_display_mode asphalt_modes[] = {
@@ -278,17 +280,21 @@ static int asphalt_prepare(struct drm_panel *panel)
 	unsigned int i;
 	int ret;
 
-	for (i = 0; i < ARRAY_SIZE(ctx->supplies); i++) {
-		ret = regulator_enable(ctx->supplies[i].consumer);
-		if (ret) {
-			while (i--)
-				regulator_disable(ctx->supplies[i].consumer);
-			return ret;
+	if (ctx->supplies_kept) {
+		ctx->supplies_kept = false;
+	} else {
+		for (i = 0; i < ARRAY_SIZE(ctx->supplies); i++) {
+			ret = regulator_enable(ctx->supplies[i].consumer);
+			if (ret) {
+				while (i--)
+					regulator_disable(ctx->supplies[i].consumer);
+				return ret;
+			}
+			if (i == ASPHALT_VDDIO)
+				msleep(20);
 		}
-		if (i == ASPHALT_VDDIO)
-			msleep(20);
+		usleep_range(10000, 11000);
 	}
-	usleep_range(10000, 11000);
 
 	asphalt_reset(ctx);
 
@@ -364,6 +370,11 @@ static int asphalt_unprepare(struct drm_panel *panel)
 		dev_err(panel->dev, "off sequence failed: %d\n", ret);
 
 	/* Power-off completes even if a powered-down panel no longer responds. */
+	if (device_may_wakeup(panel->dev) && !ctx->shutting_down) {
+		ctx->supplies_kept = true;
+		return 0;
+	}
+	ctx->supplies_kept = false;
 	asphalt_power_off(ctx);
 	return 0;
 }
@@ -554,6 +565,8 @@ static int asphalt_probe(struct mipi_dsi_device *dsi)
 			return dev_err_probe(dev, ret, "DSI%u attach failed\n", i);
 	}
 
+	device_set_wakeup_capable(dev, true);
+
 	return 0;
 }
 
@@ -561,10 +574,15 @@ static void asphalt_shutdown(struct mipi_dsi_device *dsi)
 {
 	struct asphalt_panel *ctx = mipi_dsi_get_drvdata(dsi);
 
+	ctx->shutting_down = true;
 	if (ctx->panel.enabled)
 		drm_panel_disable(&ctx->panel);
 	if (ctx->panel.prepared)
 		drm_panel_unprepare(&ctx->panel);
+	if (ctx->supplies_kept) {
+		ctx->supplies_kept = false;
+		asphalt_power_off(ctx);
+	}
 }
 
 static const struct of_device_id asphalt_of_match[] = {
