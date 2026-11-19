@@ -1557,11 +1557,42 @@ static const struct v4l2_subdev_video_ops ov13b10_video_ops = {
 	.s_stream = ov13b10_set_stream,
 };
 
+static int ov13b10_get_selection(struct v4l2_subdev *sd,
+				 const struct v4l2_subdev_client_info *ci,
+				 struct v4l2_subdev_state *sd_state,
+				 struct v4l2_subdev_selection *sel)
+{
+	struct ov13b10 *ov13b = to_ov13b10(sd);
+
+	switch (sel->target) {
+	case V4L2_SEL_TGT_CROP: {
+		mutex_lock(&ov13b->mutex);
+		sel->r.width = ov13b->cur_mode->width;
+		sel->r.height = ov13b->cur_mode->height;
+		sel->r.left = (4208 - sel->r.width) / 2;
+		sel->r.top = (3120 - sel->r.height) / 2;
+		mutex_unlock(&ov13b->mutex);
+		return 0;
+	}
+	case V4L2_SEL_TGT_CROP_DEFAULT:
+	case V4L2_SEL_TGT_CROP_BOUNDS:
+	case V4L2_SEL_TGT_NATIVE_SIZE:
+		sel->r.left = 0;
+		sel->r.top = 0;
+		sel->r.width = 4208;
+		sel->r.height = 3120;
+		return 0;
+	default:
+		return -EINVAL;
+	}
+}
+
 static const struct v4l2_subdev_pad_ops ov13b10_pad_ops = {
 	.enum_mbus_code = ov13b10_enum_mbus_code,
 	.get_fmt = ov13b10_get_pad_format,
 	.set_fmt = ov13b10_set_pad_format,
 	.enum_frame_size = ov13b10_enum_frame_size,
+	.get_selection = ov13b10_get_selection,
 };
 
 static const struct v4l2_subdev_ops ov13b10_subdev_ops = {
