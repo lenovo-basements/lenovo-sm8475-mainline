@@ -75,12 +75,19 @@ struct nvt_ts {
 	struct mutex io_lock;		/* SPI access: IRQ thread, start/stop, release work */
 	struct delayed_work release_work;
 	struct delayed_work startup_work;
+	struct work_struct deferred_work;	/* report raised while suspended */
 	unsigned long active_slots;
+	unsigned long wake_gesture_at;	/* jiffies of the last wake gesture */
+	unsigned long gesture_since;	/* jiffies of the 0x13 command */
+	bool wake_gesture;
 	bool invalid_report;
 	bool prepared;
 	bool enabled;
 	bool suspended;
 	bool running;
+	bool gesture_mode;
+	bool wake_armed;
+	bool irq_deferred;
 	bool faulted;
 	bool stopping;
 	bool cascade;
@@ -90,6 +97,7 @@ struct nvt_ts {
 	int pen_battery;
 	u8 recovery_frames;
 	u8 recovery_attempts;
+	u8 gesture_recoveries;		/* firmware reloads since 0x13 */
 	u8 io_failures;
 	u8 startup_attempts;
 	unsigned int recoveries;
@@ -630,12 +638,27 @@ static irqreturn_t nvt_irq(int irq, void *context)
 	bool watchdog = true, handshake = true;
 	int error;
 
+	/*
+	 * Never wait for resume here: suspend_device_irqs() synchronizes
+	 * with this thread, and resume can take two seconds. Read the
+	 * report once resumed; an unread report can make the firmware miss
+	 * the next gesture.
+	 */
+	if (READ_ONCE(ts->suspended)) {
+		WRITE_ONCE(ts->irq_deferred, true);
+		if (device_may_wakeup(&ts->spi->dev))
+			pm_wakeup_hard_event(&ts->spi->dev);
+		return IRQ_HANDLED;
+	}
+
 	mutex_lock(&ts->io_lock);
 	if (!ts->running)
 		goto out;
 
 	error = nvt_read(ts, NVT_EVENT, frame, sizeof(frame));
 	if (error) {
+		if (error == -ESHUTDOWN)
+			goto out;
 		dev_err_ratelimited(&ts->spi->dev, "Report read failed: %d\n", error);
 		nvt_release_contacts(ts);
 		if (++ts->io_failures > 10)
@@ -648,6 +671,58 @@ static irqreturn_t nvt_irq(int irq, void *context)
 		watchdog &= frame[i] == 0xfd || frame[i] == 0xfe;
 		handshake &= frame[i] == 0x77;
 	}
+
+	if (ts->gesture_mode) {
+		u8 gesture_id = frame[0] >> 3;
+
+		/*
+		 * The firmware watchdog fires in gesture mode too, and then
+		 * floods fd/fe reports at ~1 kHz, aborting every suspend.
+		 * Reload it like the stock driver does, and re-arm gestures.
+		 */
+		if (watchdog) {
+			if (++ts->recovery_frames <= 10)
+				goto out;
+			ts->recovery_frames = 0;
+			if (ts->gesture_recoveries++ < NVT_STARTUP_ATTEMPTS) {
+				error = nvt_recover(ts, frame[0]);
+				if (!error)
+					error = nvt_write_value(ts, NVT_HOST_CMD, 0x13, 1);
+				dev_warn(&ts->spi->dev,
+					 "Gesture-mode firmware reset (%u) %us after gesture entry: %s (%d)\n",
+					 ts->gesture_recoveries,
+					 jiffies_to_msecs(jiffies - ts->gesture_since) / 1000,
+					 error ? "recovery failed" : "firmware reloaded",
+					 error);
+				if (!error || error == -ESHUTDOWN)
+					goto out;
+			}
+			dev_err(&ts->spi->dev, "Wake gestures off until the panel is on\n");
+			nvt_fault(ts, irq);
+			goto out;
+		}
+		ts->recovery_frames = 0;
+
+		if (gesture_id == 30 && frame[1] == 1)
+			gesture_id = frame[2];
+		if (gesture_id == 15) {
+			input_report_key(ts->input, KEY_WAKEUP, 1);
+			input_sync(ts->input);
+			input_report_key(ts->input, KEY_WAKEUP, 0);
+			input_sync(ts->input);
+			WRITE_ONCE(ts->wake_gesture_at, jiffies);
+			WRITE_ONCE(ts->wake_gesture, true);
+			/*
+			 * A soft wakeup event is ignored unless userspace armed
+			 * wakeup_count; a hard one aborts a suspend that is
+			 * already past the freezer.
+			 */
+			if (device_may_wakeup(&ts->spi->dev))
+				pm_wakeup_hard_event(&ts->spi->dev);
+		}
+		goto out;
+	}
+
 	if (watchdog) {
 		if (++ts->recovery_frames <= 10)
 			goto out;
@@ -773,11 +848,78 @@ static void nvt_stop(struct nvt_ts *ts)
 	mutex_unlock(&ts->io_lock);
 }
 
+static void nvt_deferred_report(struct work_struct *work)
+{
+	struct nvt_ts *ts = container_of(work, struct nvt_ts, deferred_work);
+
+	nvt_irq(ts->spi->irq, ts);
+}
+
+static void nvt_sync_panel_wakeup(struct nvt_ts *ts)
+{
+	if (ts->follower.panel && ts->follower.panel->dev)
+		device_set_wakeup_enable(ts->follower.panel->dev,
+					 device_may_wakeup(&ts->spi->dev));
+}
+
+static void nvt_enter_gesture(struct nvt_ts *ts)
+{
+	int error;
+
+	if (!ts->running || ts->gesture_mode)
+		return;
+
+	cancel_delayed_work_sync(&ts->release_work);
+	mutex_lock(&ts->io_lock);
+	nvt_release_contacts(ts);
+	error = nvt_write_value(ts, NVT_HOST_CMD, 0x13, 1);
+	if (!error) {
+		ts->gesture_mode = true;
+		ts->gesture_since = jiffies;
+		ts->gesture_recoveries = 0;
+		ts->recovery_frames = 0;
+		WRITE_ONCE(ts->wake_gesture, false);
+	}
+	mutex_unlock(&ts->io_lock);
+	if (error) {
+		dev_warn(&ts->spi->dev, "Gesture mode command failed: %d\n", error);
+		nvt_stop(ts);
+		return;
+	}
+
+	/*
+	 * Let the firmware settle into gesture mode before the panel sends
+	 * display off and sleep in (the stock driver waits 50 ms as well):
+	 * otherwise it often trips its watchdog (fd/fe reports) and then
+	 * cannot be reloaded while the display half sleeps.
+	 */
+	msleep(50);
+}
+
+static void nvt_stop_gesture(struct nvt_ts *ts)
+{
+	if (!ts->gesture_mode)
+		return;
+
+	WRITE_ONCE(ts->stopping, true);
+	disable_irq(ts->spi->irq);
+	cancel_delayed_work_sync(&ts->release_work);
+	mutex_lock(&ts->io_lock);
+	if (ts->faulted)
+		enable_irq(ts->spi->irq);
+	ts->running = false;
+	ts->gesture_mode = false;
+	WRITE_ONCE(ts->wake_gesture, false);
+	ts->faulted = false;
+	mutex_unlock(&ts->io_lock);
+}
+
 static int nvt_panel_prepared(struct drm_panel_follower *follower)
 {
 	struct nvt_ts *ts = container_of(follower, struct nvt_ts, follower);
 
 	mutex_lock(&ts->state_lock);
+	nvt_stop_gesture(ts);
 	ts->prepared = true;
 	mutex_unlock(&ts->state_lock);
 	return 0;
@@ -788,12 +930,14 @@ static int nvt_panel_unpreparing(struct drm_panel_follower *follower)
 	struct nvt_ts *ts = container_of(follower, struct nvt_ts, follower);
 
 	mutex_lock(&ts->state_lock);
+	nvt_sync_panel_wakeup(ts);
 	ts->prepared = false;
 	ts->enabled = false;
 	mutex_unlock(&ts->state_lock);
 	cancel_delayed_work_sync(&ts->startup_work);
 	mutex_lock(&ts->state_lock);
-	nvt_stop(ts);
+	if (!ts->gesture_mode)
+		nvt_stop(ts);
 	mutex_unlock(&ts->state_lock);
 	return 0;
 }
@@ -814,11 +958,15 @@ static int nvt_panel_disabling(struct drm_panel_follower *follower)
 	struct nvt_ts *ts = container_of(follower, struct nvt_ts, follower);
 
 	mutex_lock(&ts->state_lock);
+	nvt_sync_panel_wakeup(ts);
 	ts->enabled = false;
 	mutex_unlock(&ts->state_lock);
 	cancel_delayed_work_sync(&ts->startup_work);
 	mutex_lock(&ts->state_lock);
-	nvt_stop(ts);
+	if (device_may_wakeup(&ts->spi->dev) && ts->running)
+		nvt_enter_gesture(ts);
+	else
+		nvt_stop(ts);
 	mutex_unlock(&ts->state_lock);
 	return 0;
 }
@@ -835,11 +983,38 @@ static int nvt_suspend(struct device *dev)
 	struct nvt_ts *ts = spi_get_drvdata(to_spi_device(dev));
 
 	mutex_lock(&ts->state_lock);
-	ts->suspended = true;
+	WRITE_ONCE(ts->suspended, true);
 	mutex_unlock(&ts->state_lock);
 	cancel_delayed_work_sync(&ts->startup_work);
 	mutex_lock(&ts->state_lock);
-	nvt_stop(ts);
+	/* A faulted controller's line is masked but would still wake via PDC. */
+	if (ts->gesture_mode && device_may_wakeup(dev) && !ts->faulted) {
+		/*
+		 * A double tap between blanking and the freezer reached a
+		 * session that is about to be frozen, and freeze_processes()
+		 * cleared its wakeup. Abort this suspend rather than lose it.
+		 */
+		if (READ_ONCE(ts->wake_gesture) &&
+		    time_before(jiffies, READ_ONCE(ts->wake_gesture_at) + 10 * HZ)) {
+			WRITE_ONCE(ts->wake_gesture, false);
+			pm_wakeup_hard_event(dev);
+		}
+		if (!ts->wake_armed && !enable_irq_wake(ts->spi->irq))
+			ts->wake_armed = true;
+	} else if (ts->gesture_mode) {
+		/* nvt_stop() would leave gesture_mode set and the IRQ unbalanced. */
+		bool faulted = ts->faulted;
+
+		nvt_stop_gesture(ts);
+		if (!faulted) {
+			mutex_lock(&ts->io_lock);
+			if (nvt_write_value(ts, NVT_HOST_CMD, 0x11, 1))
+				dev_warn(dev, "Deep sleep command failed\n");
+			mutex_unlock(&ts->io_lock);
+		}
+	} else {
+		nvt_stop(ts);
+	}
 	mutex_unlock(&ts->state_lock);
 	return 0;
 }
@@ -849,7 +1024,17 @@ static int nvt_resume(struct device *dev)
 	struct nvt_ts *ts = spi_get_drvdata(to_spi_device(dev));
 
 	mutex_lock(&ts->state_lock);
-	ts->suspended = false;
+	if (ts->wake_armed) {
+		disable_irq_wake(ts->spi->irq);
+		ts->wake_armed = false;
+	}
+	WRITE_ONCE(ts->suspended, false);
+	if (READ_ONCE(ts->irq_deferred)) {
+		WRITE_ONCE(ts->irq_deferred, false);
+		schedule_work(&ts->deferred_work);
+	}
+	if (ts->gesture_mode && ts->prepared && ts->enabled)
+		nvt_stop_gesture(ts);
 	nvt_queue_startup(ts);
 	mutex_unlock(&ts->state_lock);
 	return 0;
@@ -874,6 +1059,7 @@ static void nvt_cleanup(void *context)
 	mutex_lock(&ts->state_lock);
 	nvt_stop(ts);
 	mutex_unlock(&ts->state_lock);
+	cancel_work_sync(&ts->deferred_work);
 }
 
 static void nvt_release_firmware(void *context)
@@ -927,6 +1113,7 @@ static int nvt_setup_input(struct nvt_ts *ts)
 	    ts->prop.max_y >= 65535 / NVT_COORD_SCALE)
 		return -EINVAL;
 	nvt_set_resolution(ts, input, ABS_MT_POSITION_X, ABS_MT_POSITION_Y, 1);
+	input_set_capability(input, EV_KEY, KEY_WAKEUP);
 	error = input_mt_init_slots(input, NVT_MAX_CONTACTS,
 				    INPUT_MT_DIRECT | INPUT_MT_DROP_UNUSED);
 	if (error)
@@ -1065,10 +1252,14 @@ static ssize_t rotation_store(struct device *dev, struct device_attribute *attr,
 	if (degrees % 90 || degrees > 270)
 		return -EINVAL;
 
+	/*
+	 * In gesture mode the firmware takes no other host command: one would
+	 * knock it out of gesture detection. The next download applies it.
+	 */
 	mutex_lock(&ts->io_lock);
 	old = ts->rotation;
 	WRITE_ONCE(ts->rotation, degrees / 90);
-	if (ts->running && ts->rotation != old) {
+	if (ts->running && !ts->gesture_mode && ts->rotation != old) {
 		error = nvt_configure_rotation(ts);
 		if (error)
 			WRITE_ONCE(ts->rotation, old);
@@ -1118,6 +1309,7 @@ static int nvt_probe(struct spi_device *spi)
 	mutex_init(&ts->io_lock);
 	INIT_DELAYED_WORK(&ts->release_work, nvt_release_invalid_report);
 	INIT_DELAYED_WORK(&ts->startup_work, nvt_startup_work);
+	INIT_WORK(&ts->deferred_work, nvt_deferred_report);
 	spi_set_drvdata(spi, ts);
 	spi->bits_per_word = 8;
 	spi->mode = SPI_MODE_0;
@@ -1152,6 +1344,8 @@ static int nvt_probe(struct spi_device *spi)
 	error = devm_add_action_or_reset(dev, nvt_cleanup, ts);
 	if (error)
 		return error;
+
+	device_init_wakeup(dev, device_property_read_bool(dev, "wakeup-source"));
 
 	ts->follower.funcs = &nvt_panel_funcs;
 	return devm_drm_panel_add_follower(dev, &ts->follower);
