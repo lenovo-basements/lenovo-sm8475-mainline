@@ -303,6 +303,13 @@ bool msm_dsi_is_master_dsi(struct msm_dsi *msm_dsi);
 bool msm_dsi_wide_bus_enabled(struct msm_dsi *msm_dsi);
 struct drm_dsc_config *msm_dsi_get_dsc_config(struct msm_dsi *msm_dsi);
 const char *msm_dsi_get_te_source(struct msm_dsi *msm_dsi);
+bool msm_dsi_seamless_refresh_ok(struct msm_dsi *msm_dsi,
+				 const struct drm_display_mode *old,
+				 const struct drm_display_mode *new);
+int msm_dsi_seamless_refresh_timing(struct msm_dsi *msm_dsi,
+				    const struct drm_display_mode *mode);
+int msm_dsi_seamless_refresh_stage(struct msm_dsi *msm_dsi,
+				   unsigned int vrefresh, unsigned int stage);
 #else
 static inline void __init msm_dsi_register(void)
 {
@@ -344,6 +351,23 @@ static inline struct drm_dsc_config *msm_dsi_get_dsc_config(struct msm_dsi *msm_
 static inline const char *msm_dsi_get_te_source(struct msm_dsi *msm_dsi)
 {
 	return NULL;
+}
+static inline bool msm_dsi_seamless_refresh_ok(struct msm_dsi *msm_dsi,
+					       const struct drm_display_mode *old,
+					       const struct drm_display_mode *new)
+{
+	return false;
+}
+static inline int msm_dsi_seamless_refresh_timing(struct msm_dsi *msm_dsi,
+						  const struct drm_display_mode *mode)
+{
+	return -EOPNOTSUPP;
+}
+static inline int msm_dsi_seamless_refresh_stage(struct msm_dsi *msm_dsi,
+						 unsigned int vrefresh,
+						 unsigned int stage)
+{
+	return -EOPNOTSUPP;
 }
 #endif
 

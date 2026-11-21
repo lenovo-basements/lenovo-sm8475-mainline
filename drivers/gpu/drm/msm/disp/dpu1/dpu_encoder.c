@@ -14,6 +14,8 @@
 
 #include <drm/drm_atomic.h>
 #include <drm/drm_crtc.h>
+#include <drm/drm_vblank.h>
+#include <drm/drm_panel.h>
 #include <drm/drm_file.h>
 #include <drm/drm_probe_helper.h>
 #include <drm/drm_framebuffer.h>
@@ -215,6 +217,9 @@ struct dpu_encoder_virt {
 
 	/* DSC configuration */
 	struct drm_dsc_config *dsc;
+
+	/* refresh rate of a seamless switch waiting for its post-kickoff stages */
+	unsigned int seamless_vrefresh;
 };
 
 #define to_dpu_encoder_virt(x) container_of(x, struct dpu_encoder_virt, base)
@@ -713,6 +718,98 @@ void dpu_encoder_update_topology(struct drm_encoder *drm_enc,
 		if (drm_mode_is_420_only(&connector->display_info, adj_mode))
 			topology->num_cdm++;
 	}
+}
+
+static struct msm_dsi *dpu_encoder_dsi(struct dpu_encoder_virt *dpu_enc,
+				       unsigned int tile)
+{
+	struct msm_drm_private *priv = dpu_enc->base.dev->dev_private;
+
+	if (tile >= dpu_enc->disp_info.num_of_h_tiles)
+		return NULL;
+
+	return priv->kms->dsi[dpu_enc->disp_info.h_tile_instance[tile]];
+}
+
+/**
+ * dpu_encoder_seamless_refresh_ok - can @new replace @old without a modeset
+ * @drm_enc: encoder
+ * @old: current adjusted mode
+ * @new: requested adjusted mode
+ *
+ * Video mode DSI only: every link must be able to change its horizontal
+ * blanking on the fly (same link rate) and the panel must follow.
+ */
+bool dpu_encoder_seamless_refresh_ok(struct drm_encoder *drm_enc,
+				     const struct drm_display_mode *old,
+				     const struct drm_display_mode *new)
+{
+	struct dpu_encoder_virt *dpu_enc = to_dpu_encoder_virt(drm_enc);
+	unsigned int i;
+
+	if (dpu_enc->disp_info.intf_type != INTF_DSI ||
+	    dpu_enc->disp_info.is_cmd_mode || !dpu_enc->disp_info.num_of_h_tiles)
+		return false;
+
+	for (i = 0; i < dpu_enc->num_phys_encs; i++)
+		if (!dpu_enc->phys_encs[i]->ops.seamless_timing)
+			return false;
+
+	for (i = 0; i < dpu_enc->disp_info.num_of_h_tiles; i++)
+		if (!msm_dsi_seamless_refresh_ok(dpu_encoder_dsi(dpu_enc, i), old, new))
+			return false;
+
+	return true;
+}
+
+static void dpu_encoder_seamless_stage(struct dpu_encoder_virt *dpu_enc,
+				       unsigned int vrefresh, unsigned int stage)
+{
+	unsigned int i;
+	int ret;
+
+	for (i = 0; i < dpu_enc->disp_info.num_of_h_tiles; i++) {
+		ret = msm_dsi_seamless_refresh_stage(dpu_encoder_dsi(dpu_enc, i),
+						     vrefresh, stage);
+		if (ret)
+			DPU_ERROR_ENC(dpu_enc, "panel refresh stage %u failed: %d\n",
+				      stage, ret);
+	}
+}
+
+/*
+ * A refresh change that atomic check accepted as seamless (no modeset): the
+ * new adjusted mode differs from what the timing engine runs. Tell the panel
+ * first, wait a frame, then stage the INTF timing for the coming CTL flush.
+ * The DSI timing follows right after the kickoff (see dpu_encoder_kickoff()).
+ */
+static void dpu_encoder_seamless_prepare(struct dpu_encoder_virt *dpu_enc)
+{
+	struct drm_crtc *crtc = dpu_enc->crtc;
+	const struct drm_display_mode *mode;
+	struct dpu_encoder_phys *phys;
+	unsigned int i, vrefresh;
+
+	if (!crtc || !crtc->state || !dpu_enc->enabled || !dpu_enc->num_phys_encs)
+		return;
+	mode = &crtc->state->adjusted_mode;
+	if (drm_mode_equal(&dpu_enc->phys_encs[0]->cached_mode, mode))
+		return;
+
+	vrefresh = drm_mode_vrefresh(mode);
+	DPU_DEBUG_ENC(dpu_enc, "seamless refresh switch to %u Hz\n", vrefresh);
+
+	dpu_encoder_seamless_stage(dpu_enc, vrefresh, DRM_PANEL_REFRESH_BEFORE);
+	drm_crtc_wait_one_vblank(crtc);
+
+	for (i = 0; i < dpu_enc->num_phys_encs; i++) {
+		phys = dpu_enc->phys_encs[i];
+		phys->cached_mode = *mode;
+		phys->ops.seamless_timing(phys);
+	}
+
+	drm_calc_timestamping_constants(crtc, mode);
+	dpu_enc->seamless_vrefresh = vrefresh;
 }
 
 bool dpu_encoder_needs_modeset(struct drm_encoder *drm_enc, struct drm_atomic_commit *state)
@@ -2084,6 +2181,8 @@ void dpu_encoder_prepare_for_kickoff(struct drm_encoder *drm_enc)
 
 	trace_dpu_enc_prepare_kickoff(DRMID(drm_enc));
 
+	dpu_encoder_seamless_prepare(dpu_enc);
+
 	/* prepare for next kickoff, may include waiting on previous kickoff */
 	DPU_ATRACE_BEGIN("enc_prepare_for_kickoff");
 	for (i = 0; i < dpu_enc->num_phys_encs; i++) {
@@ -2177,6 +2276,34 @@ void dpu_encoder_kickoff(struct drm_encoder *drm_enc)
 		phys = dpu_enc->phys_encs[i];
 		if (phys->ops.handle_post_kickoff)
 			phys->ops.handle_post_kickoff(phys);
+	}
+
+	/*
+	 * Seamless refresh switch: the CTL flush just triggered latches the
+	 * INTF timing at the next vsync. Flush the DSI timing in the same frame
+	 * so that it latches at that same boundary (flushing it before the
+	 * kickoff could latch it a frame early: one torn frame). Then the
+	 * panel's SWITCH and, two frames later, AFTER stages.
+	 */
+	if (dpu_enc->seamless_vrefresh) {
+		unsigned int vrefresh = dpu_enc->seamless_vrefresh;
+		const struct drm_display_mode *mode = &dpu_enc->phys_encs[0]->cached_mode;
+		int ret;
+
+		dpu_enc->seamless_vrefresh = 0;
+		for (i = 0; i < dpu_enc->disp_info.num_of_h_tiles; i++) {
+			ret = msm_dsi_seamless_refresh_timing(dpu_encoder_dsi(dpu_enc, i), mode);
+			if (ret)
+				DPU_ERROR_ENC(dpu_enc, "DSI timing update failed: %d\n", ret);
+		}
+		dpu_encoder_seamless_stage(dpu_enc, vrefresh, DRM_PANEL_REFRESH_SWITCH);
+		/*
+		 * Two frames: the SWITCH stage's commands only go out in the
+		 * next blanking, and the AFTER stage must follow them by a frame.
+		 */
+		for (i = 0; dpu_enc->crtc && i < 2; i++)
+			drm_crtc_wait_one_vblank(dpu_enc->crtc);
+		dpu_encoder_seamless_stage(dpu_enc, vrefresh, DRM_PANEL_REFRESH_AFTER);
 	}
 
 	DPU_ATRACE_END("encoder_kickoff");

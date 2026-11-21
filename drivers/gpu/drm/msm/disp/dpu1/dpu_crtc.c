@@ -1654,22 +1654,56 @@ int dpu_crtc_check_mode_changed(struct drm_crtc_state *old_crtc_state,
 {
 	struct drm_encoder *drm_enc;
 	struct drm_crtc *crtc = new_crtc_state->crtc;
+	struct dpu_crtc_state *cstate = to_dpu_crtc_state(new_crtc_state);
 	bool clone_mode_enabled = drm_crtc_in_clone_mode(old_crtc_state);
 	bool clone_mode_requested = drm_crtc_in_clone_mode(new_crtc_state);
 
 	DRM_DEBUG_ATOMIC("%d\n", crtc->base.id);
 
+	cstate->dpu_modeset = false;
+
 	/* there might be cases where encoder needs a modeset too */
 	drm_for_each_encoder_mask(drm_enc, crtc->dev, new_crtc_state->encoder_mask) {
 		if (dpu_encoder_needs_modeset(drm_enc, new_crtc_state->state))
-			new_crtc_state->mode_changed = true;
+			cstate->dpu_modeset = true;
 	}
 
 	if ((clone_mode_requested && !clone_mode_enabled) ||
 	    (!clone_mode_requested && clone_mode_enabled))
+		cstate->dpu_modeset = true;
+
+	if (cstate->dpu_modeset)
 		new_crtc_state->mode_changed = true;
 
 	return 0;
+}
+
+/*
+ * A mode change that only moves the horizontal front porch at the same link
+ * rate (a refresh rate switch on panels that support it) can be applied on
+ * the running pipeline: keep resources and skip the disable/enable cycle,
+ * which would blank the panel. The encoder applies the new timing at kickoff.
+ */
+static bool dpu_crtc_seamless_refresh(struct drm_crtc *crtc,
+				      struct drm_atomic_commit *state,
+				      struct drm_crtc_state *crtc_state)
+{
+	struct drm_crtc_state *old_state = drm_atomic_get_old_crtc_state(state, crtc);
+	struct drm_encoder *drm_enc;
+
+	if (!crtc_state->mode_changed || to_dpu_crtc_state(crtc_state)->dpu_modeset ||
+	    crtc_state->connectors_changed || crtc_state->active_changed ||
+	    !old_state || !old_state->active || !crtc_state->active ||
+	    old_state->encoder_mask != crtc_state->encoder_mask ||
+	    !crtc_state->encoder_mask)
+		return false;
+
+	drm_for_each_encoder_mask(drm_enc, crtc->dev, crtc_state->encoder_mask)
+		if (!dpu_encoder_seamless_refresh_ok(drm_enc, &old_state->adjusted_mode,
+						     &crtc_state->adjusted_mode))
+			return false;
+
+	return true;
 }
 
 static int dpu_crtc_atomic_check(struct drm_crtc *crtc,
@@ -1686,6 +1720,11 @@ static int dpu_crtc_atomic_check(struct drm_crtc *crtc,
 	int rc = 0;
 
 	bool needs_dirtyfb = dpu_crtc_needs_dirtyfb(crtc_state);
+
+	if (dpu_crtc_seamless_refresh(crtc, state, crtc_state)) {
+		DRM_DEBUG_ATOMIC("crtc%d: seamless refresh switch\n", crtc->base.id);
+		crtc_state->mode_changed = false;
+	}
 
 	/*
 	 * Reallocate resources on modeset or connector changes, or if color

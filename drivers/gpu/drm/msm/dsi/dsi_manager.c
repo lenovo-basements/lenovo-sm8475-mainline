@@ -4,6 +4,8 @@
  */
 
 #include "drm/drm_bridge_connector.h"
+#include <drm/drm_of.h>
+#include <drm/drm_panel.h>
 
 #include "msm_kms.h"
 #include "dsi.h"
@@ -647,4 +649,69 @@ bool msm_dsi_is_master_dsi(struct msm_dsi *msm_dsi)
 const char *msm_dsi_get_te_source(struct msm_dsi *msm_dsi)
 {
 	return msm_dsi->te_source;
+}
+
+static struct drm_panel *msm_dsi_find_panel(struct msm_dsi *msm_dsi)
+{
+	struct drm_panel *panel = NULL;
+
+	if (drm_of_find_panel_or_bridge(msm_dsi->pdev->dev.of_node, 1, 0,
+					&panel, NULL))
+		return NULL;
+
+	return panel;
+}
+
+/**
+ * msm_dsi_seamless_refresh_ok - can the display switch from @old to @new
+ * without a modeset
+ * @msm_dsi: the DSI link
+ * @old: current adjusted mode
+ * @new: requested adjusted mode
+ *
+ * Needs a host that can change its horizontal blanking on the fly at the
+ * same link rate, and a panel that knows how to follow (refresh_stage).
+ */
+bool msm_dsi_seamless_refresh_ok(struct msm_dsi *msm_dsi,
+				 const struct drm_display_mode *old,
+				 const struct drm_display_mode *new)
+{
+	struct drm_panel *panel;
+
+	if (!msm_dsi || !msm_dsi->host || !old || !new || drm_mode_equal(old, new))
+		return false;
+	if (!msm_dsi_host_seamless_ok(msm_dsi->host, old, new, IS_BONDED_DSI()))
+		return false;
+
+	panel = msm_dsi_find_panel(msm_dsi);
+	return drm_panel_has_refresh_stage(panel);
+}
+
+/**
+ * msm_dsi_seamless_refresh_timing - latch @mode's timing at the next frame
+ * @msm_dsi: the DSI link
+ * @mode: the new adjusted mode (see msm_dsi_seamless_refresh_ok())
+ */
+int msm_dsi_seamless_refresh_timing(struct msm_dsi *msm_dsi,
+				    const struct drm_display_mode *mode)
+{
+	return msm_dsi_host_update_video_timing(msm_dsi->host, mode,
+						IS_BONDED_DSI());
+}
+
+/**
+ * msm_dsi_seamless_refresh_stage - panel side of a seamless refresh change
+ * @msm_dsi: the DSI link; only the master link of a bonded pair talks to
+ *           the panel
+ * @vrefresh: the new refresh rate
+ * @stage: DRM_PANEL_REFRESH_*
+ */
+int msm_dsi_seamless_refresh_stage(struct msm_dsi *msm_dsi,
+				   unsigned int vrefresh, unsigned int stage)
+{
+	if (IS_BONDED_DSI() && !IS_MASTER_DSI_LINK(msm_dsi->id))
+		return 0;
+
+	return drm_panel_refresh_stage(msm_dsi_find_panel(msm_dsi), vrefresh,
+				       stage);
 }
