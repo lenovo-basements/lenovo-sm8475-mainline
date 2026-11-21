@@ -951,6 +951,41 @@ void drm_panel_mode_set(struct drm_panel *panel,
 EXPORT_SYMBOL(drm_panel_mode_set);
 
 /**
+ * drm_panel_has_refresh_stage - check for seamless refresh rate support
+ * @panel: DRM panel
+ *
+ * Return: true if the panel implements &drm_panel_funcs.refresh_stage.
+ */
+bool drm_panel_has_refresh_stage(struct drm_panel *panel)
+{
+	return panel && panel->funcs && panel->funcs->refresh_stage;
+}
+EXPORT_SYMBOL(drm_panel_has_refresh_stage);
+
+/**
+ * drm_panel_refresh_stage - program one stage of a seamless refresh change
+ * @panel: DRM panel
+ * @vrefresh: the new refresh rate
+ * @stage: DRM_PANEL_REFRESH_BEFORE, _SWITCH or _AFTER
+ *
+ * See &drm_panel_funcs.refresh_stage.
+ *
+ * Return: 0 on success, -EOPNOTSUPP if the panel lacks the callback, or the
+ * callback's error.
+ */
+int drm_panel_refresh_stage(struct drm_panel *panel, unsigned int vrefresh,
+			    unsigned int stage)
+{
+	if (!drm_panel_has_refresh_stage(panel))
+		return -EOPNOTSUPP;
+	if (!panel->enabled)
+		return -ENODEV;
+
+	return panel->funcs->refresh_stage(panel, vrefresh, stage);
+}
+EXPORT_SYMBOL(drm_panel_refresh_stage);
+
+/**
  * drm_panel_get - Acquire a panel reference
  * @panel: DRM panel
  *

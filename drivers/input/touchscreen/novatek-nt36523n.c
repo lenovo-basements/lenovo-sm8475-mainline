@@ -94,7 +94,10 @@ struct nvt_ts {
 	bool dma_setup;
 	bool pen_mode;
 	u8 rotation;
+	u8 palm_mode;
+	u8 stylus_state;	/* last firmware stylus state, 0xff: none yet */
 	int pen_battery;
+	u16 pen_sensitivity;		/* pressure percentage: 25..400 (100 = 1x) */
 	u8 recovery_frames;
 	u8 recovery_attempts;
 	u8 gesture_recoveries;		/* firmware reloads since 0x13 */
@@ -356,6 +359,30 @@ static int nvt_configure_rotation(struct nvt_ts *ts)
 	return nvt_host_command(ts, &commands[ts->rotation], 1);
 }
 
+/*
+ * Palm rejection strength, the vendor kernel's "game mode": normal, enhanced
+ * (stock Android uses it while a pen app is drawing) or off (games). The
+ * firmware starts out in normal mode after every download.
+ */
+enum { NVT_PALM_NORMAL, NVT_PALM_ENHANCE, NVT_PALM_OFF };
+static const char * const nvt_palm_modes[] = {
+	[NVT_PALM_NORMAL] = "normal",
+	[NVT_PALM_ENHANCE] = "enhance",
+	[NVT_PALM_OFF] = "off",
+};
+
+static int nvt_configure_palm(struct nvt_ts *ts)
+{
+	static const u8 levels[] = {
+		[NVT_PALM_NORMAL] = 0x00,
+		[NVT_PALM_ENHANCE] = 0x02,
+		[NVT_PALM_OFF] = 0x01,
+	};
+	u8 command[] = { 0x79, levels[ts->palm_mode] };
+
+	return nvt_host_command(ts, command, sizeof(command));
+}
+
 static int nvt_download_firmware(struct nvt_ts *ts)
 {
 	static const u32 destinations[] = { 0x3f128, 0x3f12c };
@@ -465,6 +492,13 @@ static int nvt_download_firmware(struct nvt_ts *ts)
 	if (error)
 		dev_warn(&ts->spi->dev, "Rotation command failed: %d\n", error);
 
+	if (ts->palm_mode != NVT_PALM_NORMAL) {
+		error = nvt_configure_palm(ts);
+		if (error)
+			dev_warn(&ts->spi->dev, "Palm mode command failed: %d\n",
+				 error);
+	}
+
 	return ts->pen ? nvt_configure_pen(ts) : 0;
 }
 
@@ -527,6 +561,10 @@ static void nvt_report_pen(struct nvt_ts *ts, const u8 *frame)
 	x = min(x, ts->pen_prop.max_x);
 	y = min(y, ts->pen_prop.max_y);
 	pressure = min_t(unsigned int, get_unaligned_be16(frame + 70), 4095);
+	if (pressure)
+		pressure = min_t(unsigned int,
+				 DIV_ROUND_UP(pressure * READ_ONCE(ts->pen_sensitivity), 100),
+				 4095);
 	distance = get_unaligned_be16(frame + 74);
 	WRITE_ONCE(ts->pen_battery, frame[77]);
 	touchscreen_report_pos(ts->pen, &ts->pen_prop, x, y, false);
@@ -751,6 +789,16 @@ static irqreturn_t nvt_irq(int irq, void *context)
 		/* 0: left pen mode, 1: pen detected, 2: entered pen mode */
 		dev_dbg(&ts->spi->dev, "Stylus state %u (pen mode %d)\n",
 			frame[2], ts->pen_mode);
+		if (frame[2] != ts->stylus_state) {
+			WRITE_ONCE(ts->stylus_state, frame[2]);
+			sysfs_notify(&ts->spi->dev.kobj, NULL, "stylus_state");
+		}
+		if (ts->pen && frame[2] == 1) {
+			input_report_key(ts->pen, BTN_TOOL_PEN, 1);
+			input_sync(ts->pen);
+			input_report_key(ts->pen, BTN_TOOL_PEN, 0);
+			input_sync(ts->pen);
+		}
 		goto out;
 	}
 
@@ -1182,7 +1230,8 @@ static ssize_t pen_mode_store(struct device *dev, struct device_attribute *attr,
 		return count;
 	}
 	ts->pen_mode = mode;
-	if (ts->running) {
+	/* As for rotation: in gesture mode the next download applies it. */
+	if (ts->running && !ts->gesture_mode) {
 		error = nvt_configure_pen(ts);
 		if (error)
 			ts->pen_mode = !mode;
@@ -1205,9 +1254,54 @@ static ssize_t pen_battery_show(struct device *dev,
 }
 static DEVICE_ATTR_RO(pen_battery);
 
+/*
+ * The firmware's own view of the pen: 0 left pen mode, 1 pen detected
+ * (sent while it waits for the display to switch to the pen refresh rate),
+ * 2 entered pen mode; -1 before the first report. Pollable.
+ */
+static ssize_t stylus_state_show(struct device *dev,
+				 struct device_attribute *attr, char *buf)
+{
+	struct nvt_ts *ts = dev_get_drvdata(dev);
+	u8 state = READ_ONCE(ts->stylus_state);
+
+	return sysfs_emit(buf, "%d\n", state == 0xff ? -1 : state);
+}
+static DEVICE_ATTR_RO(stylus_state);
+
+/* Pen pressure multiplier in percent (25..400, default 100). */
+static ssize_t pen_sensitivity_show(struct device *dev,
+				    struct device_attribute *attr, char *buf)
+{
+	struct nvt_ts *ts = dev_get_drvdata(dev);
+
+	return sysfs_emit(buf, "%u\n", READ_ONCE(ts->pen_sensitivity));
+}
+
+static ssize_t pen_sensitivity_store(struct device *dev,
+				     struct device_attribute *attr,
+				     const char *buf, size_t count)
+{
+	struct nvt_ts *ts = dev_get_drvdata(dev);
+	u16 val;
+	int error;
+
+	error = kstrtou16(buf, 10, &val);
+	if (error)
+		return error;
+	if (val < 25 || val > 400)
+		return -EINVAL;
+
+	WRITE_ONCE(ts->pen_sensitivity, val);
+	return count;
+}
+static DEVICE_ATTR_RW(pen_sensitivity);
+
 static struct attribute *nvt_pen_attrs[] = {
 	&dev_attr_pen_mode.attr,
 	&dev_attr_pen_battery.attr,
+	&dev_attr_stylus_state.attr,
+	&dev_attr_pen_sensitivity.attr,
 	NULL
 };
 
@@ -1270,8 +1364,42 @@ static ssize_t rotation_store(struct device *dev, struct device_attribute *attr,
 }
 static DEVICE_ATTR_RW(rotation);
 
+static ssize_t palm_mode_show(struct device *dev, struct device_attribute *attr,
+			      char *buf)
+{
+	struct nvt_ts *ts = dev_get_drvdata(dev);
+
+	return sysfs_emit(buf, "%s\n", nvt_palm_modes[READ_ONCE(ts->palm_mode)]);
+}
+
+static ssize_t palm_mode_store(struct device *dev, struct device_attribute *attr,
+			       const char *buf, size_t count)
+{
+	struct nvt_ts *ts = dev_get_drvdata(dev);
+	int mode, error = 0;
+	u8 old;
+
+	mode = sysfs_match_string(nvt_palm_modes, buf);
+	if (mode < 0)
+		return mode;
+
+	mutex_lock(&ts->io_lock);
+	old = ts->palm_mode;
+	WRITE_ONCE(ts->palm_mode, mode);
+	if (ts->running && !ts->gesture_mode && ts->palm_mode != old) {
+		error = nvt_configure_palm(ts);
+		if (error)
+			WRITE_ONCE(ts->palm_mode, old);
+	}
+	mutex_unlock(&ts->io_lock);
+
+	return error ?: count;
+}
+static DEVICE_ATTR_RW(palm_mode);
+
 static struct attribute *nvt_attrs[] = {
 	&dev_attr_rotation.attr,
+	&dev_attr_palm_mode.attr,
 	NULL
 };
 
@@ -1303,8 +1431,10 @@ static int nvt_probe(struct spi_device *spi)
 	if (!ts)
 		return -ENOMEM;
 	ts->spi = spi;
+	ts->stylus_state = 0xff;
 	ts->pen_mode = pen_enabled;
 	ts->pen_battery = -1;
+	ts->pen_sensitivity = 100;
 	mutex_init(&ts->state_lock);
 	mutex_init(&ts->io_lock);
 	INIT_DELAYED_WORK(&ts->release_work, nvt_release_invalid_report);

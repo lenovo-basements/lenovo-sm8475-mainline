@@ -305,7 +305,7 @@ static bool dpu_encoder_phys_vid_setup_avr(struct dpu_encoder_phys *phys_enc,
 	int ret;
 
 	if (!intf->ops.setup_avr || !min_fps || min_fps >= max_fps ||
-	    default_fps <= min_fps || default_fps > max_fps)
+	    default_fps != max_fps)
 		return false;
 
 	ret = intf->ops.setup_avr(intf, timing, default_fps, min_fps);
@@ -323,8 +323,13 @@ static bool dpu_encoder_phys_vid_vrr_enabled(struct dpu_encoder_phys *phys_enc)
 	       encoder->crtc->state && encoder->crtc->state->vrr_enabled;
 }
 
-static void dpu_encoder_phys_vid_setup_timing_engine(
-		struct dpu_encoder_phys *phys_enc)
+/*
+ * @seamless: the INTF is running and only its timing changes (refresh rate
+ * switch without a modeset); leave the CTL/pingpong/3D routing alone and let
+ * the next flush latch the new timing at a frame boundary.
+ */
+static void _dpu_encoder_phys_vid_setup_timing(struct dpu_encoder_phys *phys_enc,
+					       bool seamless)
 {
 	struct drm_display_mode mode;
 	struct dpu_hw_intf_timing_params timing_params = { 0 };
@@ -386,6 +391,13 @@ static void dpu_encoder_phys_vid_setup_timing_engine(
 	spin_lock_irqsave(phys_enc->enc_spinlock, lock_flags);
 	phys_enc->hw_intf->ops.setup_timing_gen(phys_enc->hw_intf,
 			&timing_params, fmt);
+	if (seamless) {
+		if (phys_enc->hw_ctl->ops.update_pending_flush_intf)
+			phys_enc->hw_ctl->ops.update_pending_flush_intf(phys_enc->hw_ctl,
+									phys_enc->hw_intf->idx);
+		spin_unlock_irqrestore(phys_enc->enc_spinlock, lock_flags);
+		goto fetch;
+	}
 	phys_enc->hw_ctl->ops.setup_intf_cfg(phys_enc->hw_ctl, &intf_cfg);
 
 	/* setup which pp blk will connect to this intf */
@@ -399,10 +411,22 @@ static void dpu_encoder_phys_vid_setup_timing_engine(
 
 	spin_unlock_irqrestore(phys_enc->enc_spinlock, lock_flags);
 
+fetch:
 	programmable_fetch_config(phys_enc, &timing_params);
 
 	phys_enc->avr_configured =
 		dpu_encoder_phys_vid_setup_avr(phys_enc, &timing_params);
+}
+
+static void dpu_encoder_phys_vid_setup_timing_engine(struct dpu_encoder_phys *phys_enc)
+{
+	_dpu_encoder_phys_vid_setup_timing(phys_enc, false);
+}
+
+static void dpu_encoder_phys_vid_seamless_timing(struct dpu_encoder_phys *phys_enc)
+{
+	if (phys_enc->enable_state == DPU_ENC_ENABLED)
+		_dpu_encoder_phys_vid_setup_timing(phys_enc, true);
 }
 
 static void dpu_encoder_phys_vid_vblank_irq(void *arg)
@@ -848,6 +872,7 @@ static void dpu_encoder_phys_vid_init_ops(struct dpu_encoder_phys_ops *ops)
 	ops->irq_enable = dpu_encoder_phys_vid_irq_enable;
 	ops->irq_disable = dpu_encoder_phys_vid_irq_disable;
 	ops->prepare_for_kickoff = dpu_encoder_phys_vid_prepare_for_kickoff;
+	ops->seamless_timing = dpu_encoder_phys_vid_seamless_timing;
 	ops->handle_post_kickoff = dpu_encoder_phys_vid_handle_post_kickoff;
 	ops->needs_single_flush = dpu_encoder_phys_vid_needs_single_flush;
 	ops->get_line_count = dpu_encoder_phys_vid_get_line_count;

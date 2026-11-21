@@ -199,6 +199,13 @@ static inline void dsi_write(struct msm_dsi_host *msm_host, u32 reg, u32 data)
 	writel(data, msm_host->ctrl_base + reg);
 }
 
+/*
+ * Video timing double buffering (DSI 6G 2.2+, not in dsi.xml yet): with DB
+ * mode on, timing writes take effect at the frame boundary after a flush.
+ */
+#define REG_DSI_TIMING_FLUSH	0x000001e0
+#define REG_DSI_TIMING_DB_MODE	0x000001e4
+
 static const struct msm_dsi_cfg_handler *
 dsi_get_config(struct msm_dsi_host *msm_host)
 {
@@ -808,6 +815,12 @@ static bool msm_dsi_host_version_geq(struct msm_dsi_host *msm_host,
 	       msm_host->cfg_hnd->minor >= minor);
 }
 
+static bool dsi_has_timing_db(struct msm_dsi_host *msm_host)
+{
+	return msm_dsi_host_version_geq(msm_host, MSM_DSI_VER_MAJOR_6G,
+					MSM_DSI_6G_VER_MINOR_V2_2_1);
+}
+
 bool msm_dsi_host_is_wide_bus_enabled(struct mipi_dsi_host *host)
 {
 	struct msm_dsi_host *msm_host = to_msm_dsi_host(host);
@@ -1102,6 +1115,10 @@ static int dsi_timing_setup(struct msm_dsi_host *msm_host, bool is_bonded_dsi)
 	}
 
 	if (msm_host->mode_flags & MIPI_DSI_MODE_VIDEO) {
+		/* A seamless refresh change may have left double buffering on. */
+		if (dsi_has_timing_db(msm_host))
+			dsi_write(msm_host, REG_DSI_TIMING_DB_MODE, 0);
+
 		if (msm_host->dsc)
 			dsi_update_dsc_timing(msm_host, false, is_bonded_dsi);
 
@@ -1146,6 +1163,115 @@ static int dsi_timing_setup(struct msm_dsi_host *msm_host, bool is_bonded_dsi)
 			DSI_CMD_MDP_STREAM0_TOTAL_H_TOTAL(hdisplay) |
 			DSI_CMD_MDP_STREAM0_TOTAL_V_TOTAL(mode->vdisplay));
 	}
+
+	return 0;
+}
+
+/**
+ * msm_dsi_host_seamless_ok - can @new replace @old without a modeset
+ * @host: DSI host
+ * @old: current mode
+ * @new: requested mode
+ * @is_bonded_dsi: whether this host drives half of a bonded panel
+ *
+ * True for video mode hosts with timing double buffering when the modes
+ * only differ in the horizontal front porch and keep the same link rate, so
+ * neither the clocks nor DSC need to change.
+ */
+bool msm_dsi_host_seamless_ok(struct mipi_dsi_host *host,
+			      const struct drm_display_mode *old,
+			      const struct drm_display_mode *new,
+			      bool is_bonded_dsi)
+{
+	struct msm_dsi_host *msm_host = to_msm_dsi_host(host);
+	unsigned long old_rate = dsi_get_pclk_rate(old, msm_host->dsc, is_bonded_dsi);
+	unsigned long new_rate = dsi_get_pclk_rate(new, msm_host->dsc, is_bonded_dsi);
+
+	/*
+	 * The link keeps running at the old rate. Modes designed for the same
+	 * rate can still differ by kHz rounding of mode->clock (e.g. 41 Hz on
+	 * 163.48 MHz), so allow 0.01%.
+	 */
+	if (abs_diff(old_rate, new_rate) > old_rate / 10000)
+		return false;
+
+	return dsi_has_timing_db(msm_host) &&
+	       (msm_host->mode_flags & MIPI_DSI_MODE_VIDEO) &&
+	       new->hdisplay == old->hdisplay &&
+	       new->hsync_end - new->hsync_start == old->hsync_end - old->hsync_start &&
+	       new->htotal - new->hsync_end == old->htotal - old->hsync_end &&
+	       new->vdisplay == old->vdisplay && new->vtotal == old->vtotal &&
+	       new->vsync_start == old->vsync_start &&
+	       new->vsync_end == old->vsync_end && new->flags == old->flags;
+}
+
+/**
+ * msm_dsi_host_update_video_timing - seamlessly switch to a mode that only
+ * differs in its horizontal blanking
+ * @host: DSI host, powered on in video mode
+ * @mode: the new mode: same active area, vertical timing and link rate
+ * @is_bonded_dsi: whether this host drives half of a bonded panel
+ *
+ * The new totals are written in timing double-buffer mode and take effect at
+ * the next frame boundary, alongside the DPU timing engine's own flush.
+ *
+ * Return: 0, or -EOPNOTSUPP / -EINVAL when the switch cannot be seamless.
+ */
+int msm_dsi_host_update_video_timing(struct mipi_dsi_host *host,
+				     const struct drm_display_mode *mode,
+				     bool is_bonded_dsi)
+{
+	struct msm_dsi_host *msm_host = to_msm_dsi_host(host);
+	const struct drm_display_mode *cur = msm_host->mode;
+	struct drm_display_mode *new_mode;
+	u32 h_total = mode->htotal;
+	u32 hs_end = mode->hsync_end - mode->hsync_start;
+	u32 ha_start = mode->htotal - mode->hsync_start;
+	u32 hdisplay = mode->hdisplay;
+	u32 ha_end;
+
+	if (!msm_host->power_on || !cur)
+		return -EINVAL;
+	if (!msm_dsi_host_seamless_ok(host, cur, mode, is_bonded_dsi))
+		return -EOPNOTSUPP;
+
+	if (is_bonded_dsi) {
+		h_total /= 2;
+		hs_end /= 2;
+		ha_start /= 2;
+		hdisplay /= 2;
+	}
+
+	/* As in dsi_timing_setup(): the DSC-compressed active width. */
+	if (msm_host->dsc) {
+		u32 bits_per_pclk = 24;
+
+		if (msm_dsi_host_is_wide_bus_enabled(host))
+			bits_per_pclk = msm_host->dsc->bits_per_component * 3;
+		h_total -= hdisplay;
+		hdisplay = DIV_ROUND_UP(msm_dsc_get_bytes_per_intf(msm_host->dsc,
+								   hdisplay) * 8,
+					bits_per_pclk);
+		h_total += hdisplay;
+	}
+	ha_end = ha_start + hdisplay;
+
+	new_mode = drm_mode_duplicate(msm_host->dev, mode);
+	if (!new_mode)
+		return -ENOMEM;
+
+	dsi_write(msm_host, REG_DSI_TIMING_DB_MODE, 1);
+	dsi_write(msm_host, REG_DSI_ACTIVE_H,
+		  DSI_ACTIVE_H_START(ha_start) | DSI_ACTIVE_H_END(ha_end));
+	dsi_write(msm_host, REG_DSI_TOTAL,
+		  DSI_TOTAL_H_TOTAL(h_total - 1) |
+		  DSI_TOTAL_V_TOTAL(mode->vtotal - 1));
+	dsi_write(msm_host, REG_DSI_ACTIVE_HSYNC,
+		  DSI_ACTIVE_HSYNC_START(0) | DSI_ACTIVE_HSYNC_END(hs_end));
+	dsi_write(msm_host, REG_DSI_TIMING_FLUSH, 1);
+
+	drm_mode_destroy(msm_host->dev, msm_host->mode);
+	msm_host->mode = new_mode;
 
 	return 0;
 }

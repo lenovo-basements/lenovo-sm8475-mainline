@@ -85,6 +85,13 @@ enum drm_mode_status msm_dsi_host_check_dsc(struct mipi_dsi_host *host,
 					    const struct drm_display_mode *mode,
 					    bool is_bonded_dsi);
 unsigned long msm_dsi_host_get_mode_flags(struct mipi_dsi_host *host);
+bool msm_dsi_host_seamless_ok(struct mipi_dsi_host *host,
+			      const struct drm_display_mode *old,
+			      const struct drm_display_mode *new,
+			      bool is_bonded_dsi);
+int msm_dsi_host_update_video_timing(struct mipi_dsi_host *host,
+				     const struct drm_display_mode *mode,
+				     bool is_bonded_dsi);
 int msm_dsi_host_register(struct mipi_dsi_host *host);
 void msm_dsi_host_unregister(struct mipi_dsi_host *host);
 void msm_dsi_host_set_phy_mode(struct mipi_dsi_host *host,

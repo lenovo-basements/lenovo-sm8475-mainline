@@ -481,12 +481,6 @@
 };
 
 &spi4 {
-	/*
-	 * GENI drops the pins when it runtime-suspends (250 ms idle). In
-	 * gesture mode the bus idles right after the 0x13 command, and a
-	 * floating CS selects the TDDI, which then resets (fd reports).
-	 * Park CS pulled up like the vendor sleep state.
-	 */
 	pinctrl-names = "default", "sleep";
 	pinctrl-0 = <&qup_spi4_data_clk>, <&qup_spi4_cs>;
 	pinctrl-1 = <&touch_spi_sleep>;

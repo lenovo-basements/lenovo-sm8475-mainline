@@ -88,6 +88,9 @@ void dpu_encoder_update_topology(struct drm_encoder *drm_enc,
 				 const struct drm_display_mode *adj_mode);
 
 bool dpu_encoder_needs_modeset(struct drm_encoder *drm_enc, struct drm_atomic_commit *state);
+bool dpu_encoder_seamless_refresh_ok(struct drm_encoder *drm_enc,
+				     const struct drm_display_mode *old,
+				     const struct drm_display_mode *new);
 
 void dpu_encoder_prepare_wb_job(struct drm_encoder *drm_enc,
 		struct drm_writeback_job *job);

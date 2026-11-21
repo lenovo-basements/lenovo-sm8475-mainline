@@ -217,7 +217,7 @@ static int asphalt_power_on_144(struct asphalt_panel *ctx)
 	return 0;
 }
 
-static int asphalt_enable_touch_144(struct asphalt_panel *ctx)
+static int asphalt_enable_touch(struct asphalt_panel *ctx)
 {
 	static const u8 commands[][2] = {
 		{ 0xff, 0x27 }, { 0x78, 0x80 }, { 0xff, 0x10 },
@@ -233,6 +233,70 @@ static int asphalt_enable_touch_144(struct asphalt_panel *ctx)
 	}
 
 	return 0;
+}
+
+static int asphalt_write_pairs(struct asphalt_panel *ctx, const u8 (*cmds)[2],
+			       unsigned int count)
+{
+	unsigned int i;
+	int ret;
+
+	for (i = 0; i < count; i++) {
+		ret = asphalt_write(ctx, MIPI_DSI_DCS_LONG_WRITE, cmds[i], 2, true);
+		if (ret)
+			return ret;
+	}
+
+	return 0;
+}
+
+/*
+ * Seamless 120 <-> 144 Hz: the host only changes HFP on the running stream
+ * (same link rate). The TDDI must be told around that frame which touch and
+ * pen scan timing to use, like the vendor kernel's dynamic fps
+ * (dsi_panel_match_fps_pen_setting): B2/B3 on page 0x10 select the timing,
+ * and the touch gate (page 0x27 reg 0x78) shields the touch firmware while it
+ * changes. The pen is only scanned in the 120 Hz timing.
+ *
+ * In video mode a DCS write only goes out in blanking, so writes issued
+ * after the flush land a frame after the new host timing. Measured over 60
+ * switches each way, this order avoids both a torn frame and the touch
+ * firmware watchdog (which the vendor order hit on about 1 in 4 switches):
+ *  - to 120 Hz: B2 0x91 and B3 0x01 in the frame before. B3 0x01 on 144 Hz
+ *    timing is harmless, B3 0x12 on 120 Hz timing tears. No touch gate:
+ *    closing it here trips the watchdog.
+ *  - to 144 Hz: B2 0x80 and the closed gate before, B3 0x12 at the switch,
+ *    the gate reopened two frames later (DPU waits the frames).
+ */
+static int asphalt_refresh_stage(struct drm_panel *panel, unsigned int vrefresh,
+				 unsigned int stage)
+{
+	static const u8 before_144[][2] = {
+		{ 0xff, 0x10 }, { 0xb2, 0x80 },
+		{ 0xff, 0x27 }, { 0x78, 0x00 }, { 0xff, 0x10 },
+	};
+	static const u8 before_other[][2] = {
+		{ 0xff, 0x10 }, { 0xb2, 0x91 }, { 0xb3, 0x01 },
+	};
+	static const u8 switch_144[][2] = { { 0xff, 0x10 }, { 0xb3, 0x12 } };
+	static const u8 after_144[][2] = {
+		{ 0xff, 0x27 }, { 0x78, 0x80 }, { 0xff, 0x10 },
+	};
+	struct asphalt_panel *ctx = to_asphalt_panel(panel);
+	bool is_144 = vrefresh == 144;
+
+	switch (stage) {
+	case DRM_PANEL_REFRESH_BEFORE:
+		return is_144 ? asphalt_write_pairs(ctx, before_144, ARRAY_SIZE(before_144)) :
+				asphalt_write_pairs(ctx, before_other, ARRAY_SIZE(before_other));
+	case DRM_PANEL_REFRESH_SWITCH:
+		ctx->current_refresh_rate = vrefresh;
+		return is_144 ? asphalt_write_pairs(ctx, switch_144, ARRAY_SIZE(switch_144)) : 0;
+	case DRM_PANEL_REFRESH_AFTER:
+		return is_144 ? asphalt_write_pairs(ctx, after_144, ARRAY_SIZE(after_144)) : 0;
+	default:
+		return -EINVAL;
+	}
 }
 
 static int asphalt_send_pps(struct asphalt_panel *ctx)
@@ -329,16 +393,13 @@ static int asphalt_enable(struct drm_panel *panel)
 	struct asphalt_panel *ctx = to_asphalt_panel(panel);
 	int ret;
 
-	if (ctx->current_refresh_rate != 144)
-		return 0;
-
 	/* Allow a frame interval before releasing the panel touch gate. */
-	usleep_range(7000, 8000);
-	ret = asphalt_enable_touch_144(ctx);
+	usleep_range(8500, 9500);
+	ret = asphalt_enable_touch(ctx);
 	if (ret)
-		return dev_err_probe(panel->dev, ret, "144 Hz touch-enable commands failed\n");
+		return dev_err_probe(panel->dev, ret, "touch-enable commands failed\n");
 	/* Followers start their firmware only after this callback completes. */
-	usleep_range(7000, 8000);
+	usleep_range(8500, 9500);
 
 	return 0;
 }
@@ -450,6 +511,7 @@ static int asphalt_status_show(struct seq_file *m, void *data)
 }
 DEFINE_SHOW_ATTRIBUTE(asphalt_status);
 
+
 static void asphalt_debugfs_init(struct drm_panel *panel, struct dentry *root)
 {
 	debugfs_create_file("status", 0400, root, to_asphalt_panel(panel),
@@ -463,6 +525,7 @@ static const struct drm_panel_funcs asphalt_panel_funcs = {
 	.get_modes = asphalt_get_modes,
 	.mode_valid = asphalt_mode_valid,
 	.mode_set = asphalt_mode_set,
+	.refresh_stage = asphalt_refresh_stage,
 	.get_orientation = asphalt_get_orientation,
 	.debugfs_init = asphalt_debugfs_init,
 };
@@ -518,6 +581,7 @@ static int asphalt_probe(struct mipi_dsi_device *dsi)
 		return dev_err_probe(dev, ret, "failed to get backlight\n");
 
 	/* Acquire reset after dependencies so deferral preserves the boot display. */
+
 	ctx->reset = devm_gpiod_get(dev, "reset", GPIOD_OUT_HIGH);
 	if (IS_ERR(ctx->reset))
 		return dev_err_probe(dev, PTR_ERR(ctx->reset), "failed to get panel reset\n");

@@ -213,6 +213,9 @@ struct dpu_crtc_state {
 
 	/* connector asked for PQ/BT.2020: DSPP IGC + 3D LUT tone map to the panel */
 	bool hdr_tonemap;
+
+	/* dpu_crtc_check_mode_changed() found a reason of its own for a modeset */
+	bool dpu_modeset;
 	struct drm_rect lm_bounds[CRTC_DUAL_MIXERS];
 
 	uint64_t input_fence_timeout_ns;

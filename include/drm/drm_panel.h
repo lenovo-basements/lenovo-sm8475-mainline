@@ -154,6 +154,22 @@ struct drm_panel_funcs {
 			 const struct drm_display_mode *adjusted_mode);
 
 	/**
+	 * @refresh_stage:
+	 *
+	 * Program the panel side of a seamless refresh rate change, where the
+	 * host changes its porches on a running video stream instead of doing
+	 * a modeset. @vrefresh is the new rate. Stage
+	 * %DRM_PANEL_REFRESH_BEFORE comes in the frame before the host timing
+	 * changes, %DRM_PANEL_REFRESH_SWITCH right after the new timing has
+	 * been latched, and %DRM_PANEL_REFRESH_AFTER one frame later.
+	 *
+	 * Only video mode DSI hosts that support seamless porch changes call
+	 * it. This function is optional.
+	 */
+	int (*refresh_stage)(struct drm_panel *panel, unsigned int vrefresh,
+			     unsigned int stage);
+
+	/**
 	 * @get_orientation:
 	 *
 	 * Return the panel orientation set by device tree or EDID.
@@ -377,6 +393,13 @@ int drm_panel_get_modes(struct drm_panel *panel, struct drm_connector *connector
 
 enum drm_mode_status drm_panel_mode_valid(struct drm_panel *panel,
 					  const struct drm_display_mode *mode);
+#define DRM_PANEL_REFRESH_BEFORE	0
+#define DRM_PANEL_REFRESH_SWITCH	1
+#define DRM_PANEL_REFRESH_AFTER		2
+
+bool drm_panel_has_refresh_stage(struct drm_panel *panel);
+int drm_panel_refresh_stage(struct drm_panel *panel, unsigned int vrefresh,
+			    unsigned int stage);
 void drm_panel_mode_set(struct drm_panel *panel,
 			const struct drm_display_mode *mode,
 			const struct drm_display_mode *adjusted_mode);

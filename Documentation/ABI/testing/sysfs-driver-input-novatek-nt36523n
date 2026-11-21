@@ -24,3 +24,23 @@ Description:
 		(RO) Battery level byte from the pen's last report, -1 before
 		any pen report. Present only when the device tree enables pen
 		support.
+
+What:		/sys/bus/spi/devices/<dev>/palm_mode
+Date:		November 2026
+Contact:	linux-input@vger.kernel.org
+Description:
+		(RW) How hard the controller firmware rejects palm contacts:
+		"normal" (default), "enhance" (stronger, for writing with a
+		pen while resting a hand on the screen) or "off" (no palm
+		rejection, for games with many large contacts). Re-applied
+		whenever the firmware is reloaded.
+
+What:		/sys/bus/spi/devices/<dev>/stylus_state
+Date:		November 2026
+Contact:	linux-input@vger.kernel.org
+Description:
+		(RO) The controller firmware's pen state from its last report:
+		0 left pen mode, 1 pen detected (the firmware waits for the
+		display to switch to the refresh rate it scans the pen at),
+		2 entered pen mode, -1 before any report. Supports poll().
+		Present only when the device tree enables pen support.
