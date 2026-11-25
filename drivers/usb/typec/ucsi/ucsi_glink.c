@@ -9,7 +9,6 @@
 #include <linux/mutex.h>
 #include <linux/notifier.h>
 #include <linux/of_device.h>
-#include <linux/pm_wakeup.h>
 #include <linux/property.h>
 #include <linux/soc/qcom/pdr.h>
 #include <linux/usb/typec_mux.h>
@@ -511,7 +510,6 @@ static void pmic_glink_ucsi_callback(const void *data, size_t len, void *priv)
 		pmic_glink_ucsi_write_ack(ucsi, data, len);
 		break;
 	case UC_UCSI_USBC_NOTIFY_IND:
-		pm_wakeup_dev_event(ucsi->dev->parent, 500, true);
 		queue_work(system_freezable_wq, &ucsi->notify_work);
 		break;
 	}
