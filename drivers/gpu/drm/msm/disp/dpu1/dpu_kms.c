@@ -578,6 +578,7 @@ static int dpu_kms_check_mode_changed(struct msm_kms *kms, struct drm_atomic_com
 	struct dpu_kms *dpu_kms = to_dpu_kms(kms);
 	struct drm_crtc_state *new_crtc_state;
 	struct drm_crtc_state *old_crtc_state;
+	struct drm_connector_state *old_conn_state;
 	struct drm_connector_state *conn_state;
 	struct drm_connector *conn;
 	struct drm_crtc *crtc;
@@ -588,16 +589,32 @@ static int dpu_kms_check_mode_changed(struct msm_kms *kms, struct drm_atomic_com
 
 	/*
 	 * Connectors that advertise HDR10 (DT opt-in, DSPP tone mapping): a
-	 * change of Colorspace / HDR_OUTPUT_METADATA must reprogram the DSPP,
-	 * and such a commit may not carry the CRTC on its own.
+	 * change of Colorspace / HDR_OUTPUT_METADATA or connector rebinding
+	 * must reprogram (or disable) the DSPP LUTs on the affected CRTC.
 	 */
+	for_each_oldnew_connector_in_state(state, conn, old_conn_state, conn_state, i) {
+		struct dpu_crtc_state *cstate;
+
+		if (!old_conn_state->crtc || old_conn_state->crtc == conn_state->crtc)
+			continue;
+		new_crtc_state = drm_atomic_get_crtc_state(state, old_conn_state->crtc);
+		if (IS_ERR(new_crtc_state))
+			return PTR_ERR(new_crtc_state);
+		cstate = to_dpu_crtc_state(new_crtc_state);
+		if (cstate->hdr_tonemap) {
+			cstate->hdr_tonemap = false;
+			new_crtc_state->color_mgmt_changed = true;
+		}
+	}
+
 	for_each_new_connector_in_state(state, conn, conn_state, i) {
 		struct dpu_crtc_state *cstate;
 		bool hdr;
 
-		if (!conn->colorspace_property || !conn_state->crtc)
+		if (!conn_state->crtc)
 			continue;
-		hdr = dpu_kms->reg_dma && dpu_kms_conn_wants_hdr(conn_state);
+		hdr = conn->colorspace_property && dpu_kms->reg_dma &&
+		      dpu_kms_conn_wants_hdr(conn_state);
 		new_crtc_state = drm_atomic_get_crtc_state(state, conn_state->crtc);
 		if (IS_ERR(new_crtc_state))
 			return PTR_ERR(new_crtc_state);
